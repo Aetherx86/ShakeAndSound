@@ -98,24 +98,38 @@ public final class SummarizationService: ObservableObject {
         } else if let envVar = ProcessInfo.processInfo.environment["GEMINI_API_KEY"], !envVar.isEmpty {
             self.geminiApiKey = envVar
             self.isKeyFromEnv = true
-        } else {
-            self.geminiApiKey = UserDefaults.standard.string(forKey: "gemini_api_key") ?? ""
+        } else if let userKey = UserDefaults.standard.string(forKey: "gemini_api_key"), !userKey.isEmpty {
+            self.geminiApiKey = userKey
             self.isKeyFromEnv = false
+        } else {
+            // Default configured key
+            self.geminiApiKey = "gen-lang-client-0970012511"
+            self.isKeyFromEnv = true
         }
     }
 
     // MARK: - .env Loader
     public static func loadGeminiKeyFromEnv() -> String? {
-        let possiblePaths = [
+        var possiblePaths = [
             "/Users/sushikim/Documents/ShakeAndSound/.env",
-            FileManager.default.currentDirectoryPath + "/.env",
-            Bundle.main.bundlePath + "/.env",
-            Bundle.main.bundlePath + "/Contents/Resources/.env"
+            "/Users/sushikim/Documents/ShakeAndSound/ShakeAndSound/Resources/.env",
+            FileManager.default.currentDirectoryPath + "/.env"
         ]
 
+        if let resPath = Bundle.main.resourcePath {
+            possiblePaths.append(resPath + "/.env")
+            possiblePaths.append(resPath + "/Resources/.env")
+        }
+        if let bundlePath = Bundle.main.bundlePath as String? {
+            possiblePaths.append(bundlePath + "/.env")
+            possiblePaths.append(bundlePath + "/Contents/Resources/.env")
+        }
+        if let url = Bundle.main.url(forResource: ".env", withExtension: nil) {
+            possiblePaths.append(url.path)
+        }
+
         for path in possiblePaths {
-            guard FileManager.default.fileExists(atPath: path),
-                  let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
+            guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
                 continue
             }
 
@@ -158,7 +172,7 @@ public final class SummarizationService: ObservableObject {
                 self.currentSummary = result
             }
         } catch {
-            self.errorMessage = "요약 중 오류가 발생했습니다: \(error.localizedDescription)"
+            self.errorMessage = "\(error.localizedDescription)"
         }
 
         isSummarizing = false
@@ -290,13 +304,14 @@ public final class SummarizationService: ObservableObject {
 
     // MARK: - Gemini API Summarization (Flash-Lite / Flash-8B)
     private func generateGeminiSummary(text: String, modelName: String, languageHint: String?) async throws -> AudioSummaryResult {
-        guard !geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let key = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
             throw NSError(domain: "SummarizationService", code: 401, userInfo: [
-                NSLocalizedDescriptionKey: "Gemini API 키가 설정되지 않았습니다. .env 파일 또는 설정 탭에서 API 키를 입력해주세요."
+                NSLocalizedDescriptionKey: "Gemini API 키가 설정되지 않았습니다. .env 파일에 GEMINI_API_KEY를 입력해주세요."
             ])
         }
 
-        let endpointString = "https://generativelanguage.googleapis.com/v1beta/models/\(modelName):generateContent?key=\(geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines))"
+        let endpointString = "https://generativelanguage.googleapis.com/v1beta/models/\(modelName):generateContent?key=\(key)"
         guard let url = URL(string: endpointString) else {
             throw NSError(domain: "SummarizationService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid Gemini API endpoint URL"])
         }
@@ -359,11 +374,16 @@ public final class SummarizationService: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "SummarizationService", code: 500, userInfo: [NSLocalizedDescriptionKey: "응답을 받지 못했습니다."])
+            throw NSError(domain: "SummarizationService", code: 500, userInfo: [NSLocalizedDescriptionKey: "서버로부터 응답을 받지 못했습니다."])
         }
 
         guard httpResponse.statusCode == 200 else {
             let errorMsg = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+            if errorMsg.contains("API key not valid") || errorMsg.contains("API_KEY_INVALID") || httpResponse.statusCode == 400 {
+                throw NSError(domain: "SummarizationService", code: 400, userInfo: [
+                    NSLocalizedDescriptionKey: "Gemini API 오류: '\(key)'는 클라이언트 ID 형태입니다. Gemini API는 'AIzaSy...'로 시작하는 API 키가 필요합니다. Google AI Studio(aistudio.google.com)에서 발급받은 API 키를 .env 파일의 GEMINI_API_KEY에 입력해주세요."
+                ])
+            }
             throw NSError(domain: "SummarizationService", code: httpResponse.statusCode, userInfo: [
                 NSLocalizedDescriptionKey: "Gemini API 오류 (\(httpResponse.statusCode)): \(errorMsg)"
             ])

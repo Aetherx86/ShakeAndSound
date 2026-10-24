@@ -48,7 +48,7 @@ public enum SupportedLocale: String, CaseIterable, Identifiable {
 
     public var locale: Locale {
         if self == .auto {
-            return Locale(identifier: "ko-KR") // Default to Korean if auto
+            return Locale(identifier: "ko-KR")
         }
         return Locale(identifier: rawValue)
     }
@@ -88,6 +88,7 @@ public final class SpeechTranscriptionService: ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let languageRecognizer = NLLanguageRecognizer()
+    private var languageHistory: [String] = []
     private var lastSpeechTime: Date = Date()
     private var silenceCheckTimer: Timer?
 
@@ -127,6 +128,7 @@ public final class SpeechTranscriptionService: ObservableObject {
     public func setLocale(_ newLocale: SupportedLocale, audioEngine: AudioWaveformEngine? = nil) {
         guard selectedLocale != newLocale else { return }
         selectedLocale = newLocale
+        languageHistory.removeAll()
 
         if isTranscribing, let engine = audioEngine {
             commitCurrentLiveText()
@@ -285,6 +287,7 @@ public final class SpeechTranscriptionService: ObservableObject {
         currentLiveText = ""
         committedText = ""
         segments.removeAll()
+        languageHistory.removeAll()
         errorMessage = nil
         updateLanguageDisplay()
     }
@@ -319,21 +322,71 @@ public final class SpeechTranscriptionService: ObservableObject {
         currentLiveText = ""
     }
 
-    // MARK: - Language Detection (Only active when selectedLocale == .auto)
+    // MARK: - Robust Script-Aware Language Detection
     private func analyzeSpokenLanguage(text: String) {
         guard selectedLocale == .auto else { return }
-        guard text.count >= 2 else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 4 else { return }
 
-        languageRecognizer.reset()
-        languageRecognizer.processString(text)
+        // 1. Deterministic Unicode Script Analysis
+        var hangulCount = 0
+        var kanaCount = 0
+        var latinCount = 0
+        var cjkCount = 0
 
-        let hypotheses = languageRecognizer.languageHypotheses(withMaximum: 3)
-        if let dominant = languageRecognizer.dominantLanguage {
-            let code = dominant.rawValue
-            let confidence = hypotheses[dominant] ?? 0.8
-            self.detectedLanguageCode = code
+        for scalar in trimmed.unicodeScalars {
+            let val = scalar.value
+            if (val >= 0xAC00 && val <= 0xD7AF) || (val >= 0x1100 && val <= 0x11FF) || (val >= 0x3130 && val <= 0x318F) {
+                hangulCount += 1
+            } else if (val >= 0x3040 && val <= 0x309F) || (val >= 0x30A0 && val <= 0x30FF) {
+                kanaCount += 1
+            } else if (val >= 0x4E00 && val <= 0x9FFF) {
+                cjkCount += 1
+            } else if (val >= 0x0041 && val <= 0x005A) || (val >= 0x0061 && val <= 0x007A) {
+                latinCount += 1
+            }
+        }
+
+        let totalMeaningful = hangulCount + kanaCount + latinCount + cjkCount
+        guard totalMeaningful >= 3 else { return }
+
+        let detectedCode: String
+        let confidence: Double
+
+        if Double(hangulCount) / Double(totalMeaningful) >= 0.30 {
+            detectedCode = "ko"
+            confidence = 0.98
+        } else if kanaCount > 0 {
+            detectedCode = "ja"
+            confidence = 0.95
+        } else if cjkCount >= 2 && latinCount == 0 {
+            detectedCode = "zh"
+            confidence = 0.90
+        } else if Double(latinCount) / Double(totalMeaningful) >= 0.60 {
+            languageRecognizer.reset()
+            languageRecognizer.processString(trimmed)
+            if let dominant = languageRecognizer.dominantLanguage {
+                detectedCode = dominant.rawValue
+                confidence = languageRecognizer.languageHypotheses(withMaximum: 1)[dominant] ?? 0.85
+            } else {
+                detectedCode = "en"
+                confidence = 0.80
+            }
+        } else {
+            return
+        }
+
+        // 2. Hysteresis (Voting filter to prevent jitter)
+        languageHistory.append(detectedCode)
+        if languageHistory.count > 5 {
+            languageHistory.removeFirst()
+        }
+
+        let codeVotes = languageHistory.filter { $0 == detectedCode }.count
+        if codeVotes >= 2 || confidence >= 0.95 {
+            self.detectedLanguageCode = detectedCode
             self.detectedLanguageConfidence = confidence
-            self.detectedLanguageDisplayName = localizedLanguageName(for: code)
+            self.detectedLanguageDisplayName = localizedLanguageName(for: detectedCode)
         }
     }
 
