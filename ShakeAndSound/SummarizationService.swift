@@ -3,8 +3,8 @@ import NaturalLanguage
 import Combine
 
 public enum SummarizerEngine: String, CaseIterable, Identifiable, Sendable {
-    case geminiFlashLite = "Gemini 2.0 Flash-Lite (Cheapest ⚡)"
-    case geminiFlash8B = "Gemini 1.5 Flash-8B (Ultra Low Cost)"
+    case geminiFlashLite = "Gemini Flash-Lite (Cheapest ⚡)"
+    case geminiFlash = "Gemini Flash (Fast & Low Cost)"
     case smartLocal = "Smart On-Device (Apple Intelligence / NL)"
 
     public var id: String { rawValue }
@@ -12,14 +12,14 @@ public enum SummarizerEngine: String, CaseIterable, Identifiable, Sendable {
     public var requiresApiKey: Bool {
         switch self {
         case .smartLocal: return false
-        case .geminiFlashLite, .geminiFlash8B: return true
+        case .geminiFlashLite, .geminiFlash: return true
         }
     }
 
     public var modelName: String {
         switch self {
-        case .geminiFlashLite: return "gemini-2.0-flash-lite"
-        case .geminiFlash8B: return "gemini-1.5-flash-8b"
+        case .geminiFlashLite: return "gemini-flash-lite-latest"
+        case .geminiFlash: return "gemini-flash-latest"
         case .smartLocal: return "on-device-nl"
         }
     }
@@ -101,10 +101,6 @@ public final class SummarizationService: ObservableObject {
         } else if let userKey = UserDefaults.standard.string(forKey: "gemini_api_key"), !userKey.isEmpty {
             self.geminiApiKey = userKey
             self.isKeyFromEnv = false
-        } else {
-            // Default configured key
-            self.geminiApiKey = "gen-lang-client-0970012511"
-            self.isKeyFromEnv = true
         }
     }
 
@@ -165,10 +161,10 @@ public final class SummarizationService: ObservableObject {
                 let result = await generateSmartLocalSummary(text: trimmed, languageHint: languageHint)
                 self.currentSummary = result
             case .geminiFlashLite:
-                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-2.0-flash-lite", languageHint: languageHint)
+                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-flash-lite-latest", languageHint: languageHint)
                 self.currentSummary = result
-            case .geminiFlash8B:
-                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-1.5-flash-8b", languageHint: languageHint)
+            case .geminiFlash:
+                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-flash-latest", languageHint: languageHint)
                 self.currentSummary = result
             }
         } catch {
@@ -302,7 +298,7 @@ public final class SummarizationService: ObservableObject {
         }.value
     }
 
-    // MARK: - Gemini API Summarization (Flash-Lite / Flash-8B)
+    // MARK: - Gemini API Summarization (Flash-Lite / Flash)
     private func generateGeminiSummary(text: String, modelName: String, languageHint: String?) async throws -> AudioSummaryResult {
         let key = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
@@ -379,11 +375,6 @@ public final class SummarizationService: ObservableObject {
 
         guard httpResponse.statusCode == 200 else {
             let errorMsg = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
-            if errorMsg.contains("API key not valid") || errorMsg.contains("API_KEY_INVALID") || httpResponse.statusCode == 400 {
-                throw NSError(domain: "SummarizationService", code: 400, userInfo: [
-                    NSLocalizedDescriptionKey: "Gemini API 오류: '\(key)'는 클라이언트 ID 형태입니다. Gemini API는 'AIzaSy...'로 시작하는 API 키가 필요합니다. Google AI Studio(aistudio.google.com)에서 발급받은 API 키를 .env 파일의 GEMINI_API_KEY에 입력해주세요."
-                ])
-            }
             throw NSError(domain: "SummarizationService", code: httpResponse.statusCode, userInfo: [
                 NSLocalizedDescriptionKey: "Gemini API 오류 (\(httpResponse.statusCode)): \(errorMsg)"
             ])
@@ -417,7 +408,7 @@ public final class SummarizationService: ObservableObject {
         }
 
         let words = text.split(separator: " ").count
-        let engine = modelName.contains("8b") ? SummarizerEngine.geminiFlash8B : SummarizerEngine.geminiFlashLite
+        let engine = modelName.contains("lite") ? SummarizerEngine.geminiFlashLite : SummarizerEngine.geminiFlash
 
         return AudioSummaryResult(
             engine: engine,
