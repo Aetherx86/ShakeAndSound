@@ -31,10 +31,10 @@ public struct SeismoView: View {
                 // Status Card
                 StatCard(
                     title: "PHYSICAL SENSOR STATUS",
-                    value: seismoService.isMonitoring ? (seismoService.isEventTriggered ? "SHAKE DETECTED!" : "LIVE SENSING") : "IDLE",
-                    subvalue: "Keyboard + Trackpad + Acoustic Fusion",
-                    icon: "wave.3.forward",
-                    tintColor: seismoService.isEventTriggered ? .red : (seismoService.isMonitoring ? .green : .secondary)
+                    value: seismoService.isMonitoring ? (seismoService.isEventTriggered ? "SHAKE DETECTED!" : "LIVE SENSING") : (seismoService.isManuallyPaused ? "PAUSED BY USER" : "IDLE"),
+                    subvalue: seismoService.isManuallyPaused ? "일시정지됨 • 탭 이동해도 유지됨" : "Keyboard + Trackpad + Acoustic Fusion",
+                    icon: seismoService.isManuallyPaused ? "pause.circle.fill" : "wave.3.forward",
+                    tintColor: seismoService.isEventTriggered ? .red : (seismoService.isMonitoring ? .green : (seismoService.isManuallyPaused ? .orange : .secondary))
                 )
             }
 
@@ -184,9 +184,9 @@ public struct SeismoView: View {
 
                     Button {
                         if seismoService.isMonitoring {
-                            seismoService.stopMonitoring()
+                            seismoService.pauseByUser()
                         } else {
-                            seismoService.startMonitoring()
+                            seismoService.resumeByUser()
                         }
                     } label: {
                         Label(seismoService.isMonitoring ? "모니터링 일시정지" : "지진계 시작",
@@ -253,12 +253,16 @@ public struct SeismoView: View {
                 break
             }
         }
+        .onKeyPress { _ in
+            seismoService.registerTypingImpulse()
+            return .ignored
+        }
         .onAppear {
             isViewFocused = true
             DispatchQueue.main.async {
                 NSApplication.shared.windows.forEach { $0.acceptsMouseMovedEvents = true }
             }
-            if !seismoService.isMonitoring {
+            if !seismoService.isMonitoring && !seismoService.isManuallyPaused {
                 seismoService.startMonitoring()
             }
         }

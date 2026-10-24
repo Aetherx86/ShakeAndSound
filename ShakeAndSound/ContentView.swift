@@ -29,6 +29,8 @@ public struct ContentView: View {
     @State private var editableTranscript: String = ""
     @State private var showingCopiedToast = false
     @State private var transcriptionViewMode: Int = 0 // 0: Segment Cards, 1: Text Editor
+    @State private var isApiKeyLocked: Bool = true
+    @State private var showingUnlockAlert: Bool = false
 
     public init() {}
 
@@ -172,6 +174,14 @@ public struct ContentView: View {
                     }
                 }
             }
+        }
+        .alert("API 키 잠금 해제 확인", isPresented: $showingUnlockAlert) {
+            Button("잠금 해제", role: .destructive) {
+                isApiKeyLocked = false
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("API 키를 수정하려면 잠금을 해제해야 합니다. 키가 노출되거나 원치 않게 변경될 수 있으니 수정 후 반드시 다시 잠금 상태로 설정해주세요.")
         }
     }
 
@@ -689,15 +699,67 @@ public struct ContentView: View {
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
 
+                    // API Key Anti-Tamper & Anti-Copy Protection Header
                     HStack {
-                        SecureField("Gemini API Key", text: $summarizer.geminiApiKey)
-                            .textFieldStyle(.roundedBorder)
+                        HStack(spacing: 6) {
+                            Image(systemName: isApiKeyLocked ? "lock.fill" : "lock.open.trianglebadge.exclamationmark.fill")
+                                .foregroundColor(isApiKeyLocked ? .green : .orange)
+                            Text(isApiKeyLocked ? "보안 잠금 활성화됨 (복사 및 변조 차단)" : "수정 모드 (보안 주의)")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(isApiKeyLocked ? .green : .orange)
+                        }
 
-                        if !summarizer.geminiApiKey.isEmpty && !summarizer.isKeyFromEnv {
-                            Button("지우기") {
-                                summarizer.geminiApiKey = ""
+                        Spacer()
+
+                        Button {
+                            if isApiKeyLocked {
+                                showingUnlockAlert = true
+                            } else {
+                                isApiKeyLocked = true
                             }
-                            .buttonStyle(.bordered)
+                        } label: {
+                            Label(isApiKeyLocked ? "잠금 해제 (Unlock)" : "지금 다시 잠금 (Lock)",
+                                  systemImage: isApiKeyLocked ? "lock.open.fill" : "lock.fill")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(isApiKeyLocked ? .secondary : .orange)
+                    }
+                    .padding(8)
+                    .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+
+                    // Protected Field Container
+                    if isApiKeyLocked {
+                        HStack {
+                            Image(systemName: "shield.checkered")
+                                .foregroundColor(.green)
+                            Text("••••••••••••••••••••••••••••••••••••••••")
+                                .font(.system(size: 13, weight: .heavy, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.6))
+                                .textSelection(.disabled)
+
+                            Spacer()
+
+                            Text("🔒 복사/붙여넣기 불가")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green.opacity(0.3), lineWidth: 1))
+                        .allowsHitTesting(false)
+                    } else {
+                        HStack {
+                            SecureField("Gemini API Key 직접 입력", text: $summarizer.geminiApiKey)
+                                .textFieldStyle(.roundedBorder)
+
+                            if !summarizer.geminiApiKey.isEmpty && !summarizer.isKeyFromEnv {
+                                Button("지우기") {
+                                    summarizer.geminiApiKey = ""
+                                }
+                                .buttonStyle(.bordered)
+                            }
                         }
                     }
 

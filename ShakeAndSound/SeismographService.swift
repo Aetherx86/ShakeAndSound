@@ -36,6 +36,7 @@ public final class SeismographService: ObservableObject {
     @Published public var triggerThreshold: Double = 3.0
     @Published public var isSimulatedMode: Bool = false                  // Physical Sensor Fusion Active
     @Published public var sensorSensitivity: Double = 2.5                // High-responsiveness default
+    @Published public var isManuallyPaused: Bool = false                 // Explicit user pause tracking
 
     // Real-Time Physical Sensor Inputs
     private var physicalMotionX: Double = 0.0
@@ -85,6 +86,16 @@ public final class SeismographService: ObservableObject {
                 self?.sampleStep()
             }
         }
+    }
+
+    public func pauseByUser() {
+        isManuallyPaused = true
+        stopMonitoring()
+    }
+
+    public func resumeByUser() {
+        isManuallyPaused = false
+        startMonitoring()
     }
 
     public func stopMonitoring() {

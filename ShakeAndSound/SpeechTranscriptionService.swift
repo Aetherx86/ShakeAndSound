@@ -179,17 +179,27 @@ public final class SpeechTranscriptionService: ObservableObject {
 
     // MARK: - Permissions
     public func requestPermissions() async -> Bool {
-        let speechGranted = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                Task { @MainActor in
-                    self.authorizationStatus = status
-                    continuation.resume(returning: status == .authorized)
+        let currentSpeechStatus = SFSpeechRecognizer.authorizationStatus()
+        let speechGranted: Bool
+        if currentSpeechStatus == .authorized {
+            self.authorizationStatus = .authorized
+            speechGranted = true
+        } else {
+            speechGranted = await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    Task { @MainActor in
+                        self.authorizationStatus = status
+                        continuation.resume(returning: status == .authorized)
+                    }
                 }
             }
         }
 
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         let micGranted: Bool
-        if #available(macOS 14.0, *) {
+        if micStatus == .authorized {
+            micGranted = true
+        } else if #available(macOS 14.0, *) {
             micGranted = await AVCaptureDevice.requestAccess(for: .audio)
         } else {
             micGranted = true
