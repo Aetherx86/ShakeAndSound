@@ -77,7 +77,7 @@ public struct ContentView: View {
 
                                 Spacer()
 
-                                if tab == .sound && audioEngine.isRunning {
+                                if tab == .sound && speechService.isTranscribing {
                                     Circle()
                                         .fill(Color.red)
                                         .frame(width: 8, height: 8)
@@ -211,16 +211,16 @@ public struct ContentView: View {
                         toggleRecording()
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: audioEngine.isRunning ? "stop.circle.fill" : "mic.circle.fill")
+                            Image(systemName: speechService.isTranscribing ? "stop.circle.fill" : "mic.circle.fill")
                                 .font(.system(size: 16, weight: .bold))
-                            Text(audioEngine.isRunning ? "음성 인식 중지" : "마이크 녹음 및 전사 시작")
+                            Text(speechService.isTranscribing ? "음성 인식 중지" : "마이크 녹음 및 전사 시작")
                                 .font(.system(size: 13, weight: .bold))
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(audioEngine.isRunning ? .red : .cyan)
+                    .tint(speechService.isTranscribing ? .red : .cyan)
 
                     // Language Mode Badge (Fixed or Auto)
                     HStack(spacing: 6) {
@@ -820,7 +820,7 @@ public struct ContentView: View {
     }
 
     private func toggleRecording() {
-        if audioEngine.isRunning {
+        if speechService.isTranscribing {
             speechService.stopTranscription(audioEngine: audioEngine)
         } else {
             Task {

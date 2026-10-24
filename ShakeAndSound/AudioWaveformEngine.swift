@@ -76,10 +76,8 @@ public final class AudioWaveformEngine: ObservableObject {
                 AudioClassifierService.shared.analyzeBuffer(buffer)
             }
 
-            // 3. Forward to speech recognizer
-            Task { @MainActor [weak self] in
-                self?.onBufferReceived?(buffer, time)
-            }
+            // 3. Forward to speech recognizer immediately (thread-safe for AVAudioPCMBuffer)
+            self.onBufferReceived?(buffer, time)
         }
 
         engine.prepare()

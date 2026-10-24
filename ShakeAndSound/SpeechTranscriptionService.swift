@@ -202,6 +202,10 @@ public final class SpeechTranscriptionService: ObservableObject {
     public func startTranscription(audioEngine: AudioWaveformEngine) async throws {
         guard !isTranscribing else { return }
 
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+
         let permitted = await requestPermissions()
         guard permitted else {
             errorMessage = "마이크 또는 음성 인식 권한이 필요합니다. 시스템 설정에서 권한을 확인해주세요."
@@ -285,15 +289,9 @@ public final class SpeechTranscriptionService: ObservableObject {
             }
         }
 
-        // Hook audio engine buffer tap with cough & noise suppression filter
+        // Hook audio engine buffer tap with direct feed to Speech Recognizer (thread-safe, zero buffer delay)
         audioEngine.onBufferReceived = { [weak self] buffer, _ in
-            guard let self = self else { return }
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                if !AudioClassifierService.shared.shouldSuppressAudio() {
-                    self.recognitionRequest?.append(buffer)
-                }
-            }
+            self?.recognitionRequest?.append(buffer)
         }
     }
 

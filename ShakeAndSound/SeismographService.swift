@@ -71,10 +71,7 @@ public final class SeismographService: ObservableObject {
         // 1. Ensure windows accept mouse movement events
         NSApplication.shared.windows.forEach { $0.acceptsMouseMovedEvents = true }
 
-        // 2. Ensure audio engine is running to capture acoustic chassis vibration
-        if !AudioWaveformEngine.shared.isRunning {
-            try? AudioWaveformEngine.shared.start()
-        }
+        // 2. Passive acoustic vibration monitoring (does not interfere with Sound Studio)
 
         // 3. Install physical keyboard & mouse/trackpad event monitor
         setupPhysicalMotionEventMonitor()
