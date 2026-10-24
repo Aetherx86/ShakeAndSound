@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct SeismoView: View {
     @ObservedObject var seismoService = SeismographService.shared
+    @FocusState private var isViewFocused: Bool
 
     public init() {}
 
@@ -13,9 +14,9 @@ public struct SeismoView: View {
                 StatCard(
                     title: "PEAK GROUND ACCEL",
                     value: String(format: "%.2f mg", seismoService.currentPGA),
-                    subvalue: seismoService.currentPGA > 10.0 ? "강한 진동 발생" : "정상 배경 진동",
+                    subvalue: seismoService.currentPGA > 12.0 ? "강한 진동 발생" : "정상 배경 진동",
                     icon: "waveform.path.ecg",
-                    tintColor: seismoService.currentPGA > 10.0 ? .orange : .cyan
+                    tintColor: seismoService.currentPGA > 12.0 ? .orange : .cyan
                 )
 
                 // STA/LTA Ratio Card
@@ -31,7 +32,7 @@ public struct SeismoView: View {
                 StatCard(
                     title: "PHYSICAL SENSOR STATUS",
                     value: seismoService.isMonitoring ? (seismoService.isEventTriggered ? "SHAKE DETECTED!" : "LIVE SENSING") : "IDLE",
-                    subvalue: "Acoustic + Motion Fusion",
+                    subvalue: "Keyboard + Trackpad + Acoustic Fusion",
                     icon: "wave.3.forward",
                     tintColor: seismoService.isEventTriggered ? .red : (seismoService.isMonitoring ? .green : .secondary)
                 )
@@ -62,7 +63,7 @@ public struct SeismoView: View {
                         .fill(Color(red: 0.03, green: 0.05, blue: 0.10))
                         .overlay(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(seismoService.isEventTriggered ? Color.red.opacity(0.8) : Color.cyan.opacity(0.2), lineWidth: seismoService.isEventTriggered ? 2 : 1)
+                                .stroke(seismoService.isEventTriggered ? Color.red.opacity(0.85) : Color.cyan.opacity(0.2), lineWidth: seismoService.isEventTriggered ? 2.5 : 1)
                         )
 
                     Canvas { context, size in
@@ -108,7 +109,7 @@ public struct SeismoView: View {
                                 .onChanged { value in
                                     let translation = value.translation
                                     let dragSpeed = sqrt(translation.width * translation.width + translation.height * translation.height)
-                                    seismoService.injectDirectShake(intensity: Double(min(5.0, dragSpeed / 12.0)))
+                                    seismoService.injectDirectShake(intensity: Double(min(5.0, dragSpeed / 10.0)))
                                 }
                         )
                 }
@@ -134,7 +135,7 @@ public struct SeismoView: View {
                     Circle()
                         .fill(seismoService.isMonitoring ? Color.green : Color.gray)
                         .frame(width: 6, height: 6)
-                    Text("🟢 실시간 감지 중: 책상 두드림, 마우스/트랙패드 흔들기, 직접 드래그")
+                    Text("🟢 실시간 감지 중: 키보드 타이핑, 트랙패드/마우스 흔들기, 책상/맥북 충격")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
@@ -151,14 +152,14 @@ public struct SeismoView: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        seismoService.injectImpulse(type: "책상 톡톡 두드림", strength: 0.6)
+                        seismoService.injectImpulse(type: "책상 톡톡 두드림", strength: 0.7)
                     } label: {
                         Label("책상 두드림 (Tap)", systemImage: "hand.tap.fill")
                     }
                     .buttonStyle(.bordered)
 
                     Button {
-                        seismoService.injectImpulse(type: "키보드 타이핑 진동", strength: 0.35)
+                        seismoService.injectImpulse(type: "키보드 타이핑 진동", strength: 0.4)
                     } label: {
                         Label("타이핑 진동", systemImage: "keyboard.fill")
                     }
@@ -172,7 +173,7 @@ public struct SeismoView: View {
                     .buttonStyle(.bordered)
 
                     Button {
-                        seismoService.injectImpulse(type: "강한 지진 흔들림", strength: 2.0)
+                        seismoService.injectImpulse(type: "강한 지진 흔들림", strength: 2.2)
                     } label: {
                         Label("지진 경보 이벤트", systemImage: "exclamationmark.triangle.fill")
                     }
@@ -242,7 +243,21 @@ public struct SeismoView: View {
             }
         }
         .padding()
+        .focusable()
+        .focused($isViewFocused)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                seismoService.registerPointerMotion(location: location)
+            case .ended:
+                break
+            }
+        }
         .onAppear {
+            isViewFocused = true
+            DispatchQueue.main.async {
+                NSApplication.shared.windows.forEach { $0.acceptsMouseMovedEvents = true }
+            }
             if !seismoService.isMonitoring {
                 seismoService.startMonitoring()
             }

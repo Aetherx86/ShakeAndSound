@@ -33,9 +33,9 @@ public final class SeismographService: ObservableObject {
     @Published public private(set) var detectedEvents: [SeismicEvent] = []
 
     // Settings
-    @Published public var triggerThreshold: Double = 3.5
-    @Published public var isSimulatedMode: Bool = false                  // Real Sensor Fusion Active
-    @Published public var sensorSensitivity: Double = 2.0                // Responsive default
+    @Published public var triggerThreshold: Double = 3.0
+    @Published public var isSimulatedMode: Bool = false                  // Physical Sensor Fusion Active
+    @Published public var sensorSensitivity: Double = 2.5                // High-responsiveness default
 
     // Real-Time Physical Sensor Inputs
     private var physicalMotionX: Double = 0.0
@@ -43,14 +43,20 @@ public final class SeismographService: ObservableObject {
     private var physicalMotionZ: Double = 0.0
     private var impulseStrength: Double = 0.0
     private var impulseLabel: String = "외력 충격"
-    private var lastDeltaSignX: Double = 0.0
-    private var directionChangeCount: Int = 0
 
+    // Trackpad / Mouse Shake Tracking
+    private var lastPointerLocation: CGPoint = .zero
+    private var lastPointerTime: Date = Date()
+    private var lastPointerSignX: Double = 0.0
+    private var pointerShakeCount: Int = 0
+
+    // Event Monitor & Notifications
     private var eventMonitor: Any?
+    private var windowMoveObserver: NSObjectProtocol?
     private var timer: Timer?
     private var staEnergy: Double = 0.0
     private var ltaEnergy: Double = 0.0
-    private let staAlpha: Double = 0.20     // Fast short term window
+    private let staAlpha: Double = 0.22     // Fast short term window
     private let ltaAlpha: Double = 0.015    // Long term background window
     private let maxHistorySamples = 180
 
@@ -62,15 +68,21 @@ public final class SeismographService: ObservableObject {
         staEnergy = 0.01
         ltaEnergy = 0.01
 
-        // 1. Ensure audio engine is capturing acoustic chassis vibration (seismometer diaphragm)
+        // 1. Ensure windows accept mouse movement events
+        NSApplication.shared.windows.forEach { $0.acceptsMouseMovedEvents = true }
+
+        // 2. Ensure audio engine is running to capture acoustic chassis vibration
         if !AudioWaveformEngine.shared.isRunning {
             try? AudioWaveformEngine.shared.start()
         }
 
-        // 2. Install local mouse/trackpad shake and velocity event monitor
+        // 3. Install physical keyboard & mouse/trackpad event monitor
         setupPhysicalMotionEventMonitor()
 
-        // 3. High-frequency 50ms sampling loop
+        // 4. Window move / jolt observer
+        setupWindowMoveObserver()
+
+        // 5. High-frequency 40ms sampling loop (25 samples per second)
         timer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.sampleStep()
@@ -87,6 +99,11 @@ public final class SeismographService: ObservableObject {
             eventMonitor = nil
         }
 
+        if let observer = windowMoveObserver {
+            NotificationCenter.default.removeObserver(observer)
+            windowMoveObserver = nil
+        }
+
         timer?.invalidate()
         timer = nil
         currentPGA = 0.0
@@ -97,49 +114,109 @@ public final class SeismographService: ObservableObject {
         physicalMotionZ = 0
     }
 
-    // MARK: - Physical Shake & Motion Event Listener
+    // MARK: - Physical Event Monitors (Keyboard & Mouse)
     private func setupPhysicalMotionEventMonitor() {
         guard eventMonitor == nil else { return }
 
         eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .scrollWheel]
+            matching: [.keyDown, .mouseMoved, .leftMouseDragged, .rightMouseDragged, .scrollWheel, .leftMouseDown]
         ) { [weak self] event in
             guard let self = self, self.isMonitoring else { return event }
+
+            if event.type == .keyDown {
+                // Real physical keyboard typing detected!
+                self.registerTypingImpulse()
+                return event
+            }
 
             let dx = Double(event.deltaX)
             let dy = Double(event.deltaY)
             let speed = sqrt(dx * dx + dy * dy)
 
-            // Detect rapid back-and-forth direction reversals (Physical Shaking)
-            let currentSignX = dx > 0 ? 1.0 : (dx < 0 ? -1.0 : 0.0)
-            if currentSignX != 0 && self.lastDeltaSignX != 0 && currentSignX != self.lastDeltaSignX {
-                self.directionChangeCount = min(8, self.directionChangeCount + 1)
-            }
-            self.lastDeltaSignX = currentSignX
+            if speed > 1.2 {
+                let signX = dx > 0 ? 1.0 : -1.0
+                if self.lastPointerSignX != 0 && signX != self.lastPointerSignX {
+                    self.pointerShakeCount = min(10, self.pointerShakeCount + 1)
+                }
+                self.lastPointerSignX = signX
 
-            // Inject physical acceleration proportional to shake speed & reversals
-            if speed > 4.0 {
-                let shakeFactor = 1.0 + Double(self.directionChangeCount) * 1.2
-                self.physicalMotionX += dx * 0.35 * shakeFactor
-                self.physicalMotionY += dy * 0.35 * shakeFactor
-                self.physicalMotionZ += (speed * 0.25) * shakeFactor
+                let shakeMultiplier = 1.0 + Double(self.pointerShakeCount) * 1.8
+                let boost = (speed * 0.9 * shakeMultiplier) * (self.sensorSensitivity / 2.0)
+                self.physicalMotionX += dx * 0.7 * shakeMultiplier
+                self.physicalMotionY += dy * 0.7 * shakeMultiplier
+                self.physicalMotionZ += boost * 0.8
+                self.impulseLabel = self.pointerShakeCount >= 2 ? "트랙패드/마우스 흔들기" : "포인터 모션"
             }
 
             return event
         }
     }
 
-    // MARK: - Direct Impulses
+    private func setupWindowMoveObserver() {
+        guard windowMoveObserver == nil else { return }
+        windowMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.registerWindowShake()
+            }
+        }
+    }
+
+    // MARK: - Direct Physical Actions
+    public func registerPointerMotion(location: CGPoint) {
+        let now = Date()
+        lastPointerTime = now
+
+        let dx = location.x - lastPointerLocation.x
+        let dy = location.y - lastPointerLocation.y
+        lastPointerLocation = location
+
+        let speed = sqrt(dx * dx + dy * dy)
+        guard speed > 2.0 else { return }
+
+        let signX = dx > 0 ? 1.0 : -1.0
+        if lastPointerSignX != 0 && signX != lastPointerSignX {
+            pointerShakeCount = min(10, pointerShakeCount + 1)
+        }
+        lastPointerSignX = signX
+
+        let shakeFactor = 1.0 + Double(pointerShakeCount) * 1.6
+        let impulse = (speed * 0.85 * shakeFactor) * (sensorSensitivity / 2.0)
+        physicalMotionX += Double(dx) * 0.6 * shakeFactor
+        physicalMotionY += Double(dy) * 0.6 * shakeFactor
+        physicalMotionZ += impulse * 0.75
+        impulseLabel = pointerShakeCount >= 2 ? "트랙패드 좌우 흔들기" : "트랙패드 스와이프"
+    }
+
+    public func registerTypingImpulse() {
+        let keyShock = Double.random(in: 18.0...32.0) * sensorSensitivity
+        physicalMotionZ += keyShock
+        physicalMotionX += Double.random(in: -keyShock...keyShock) * 0.45
+        physicalMotionY += Double.random(in: -keyShock...keyShock) * 0.45
+        impulseLabel = "키보드 타이핑 진동 (Keystroke)"
+    }
+
+    public func registerWindowShake() {
+        let windowJolt = 45.0 * sensorSensitivity
+        physicalMotionZ += windowJolt
+        physicalMotionX += Double.random(in: -windowJolt...windowJolt) * 0.6
+        physicalMotionY += Double.random(in: -windowJolt...windowJolt) * 0.6
+        impulseLabel = "윈도우/맥북 흔들림 (Chassis Shake)"
+    }
+
     public func injectDirectShake(intensity: Double) {
-        let boosted = intensity * 45.0 * sensorSensitivity
+        let boosted = intensity * 50.0 * sensorSensitivity
         physicalMotionX += Double.random(in: -boosted...boosted)
         physicalMotionY += Double.random(in: -boosted...boosted)
         physicalMotionZ += boosted
-        impulseLabel = "직접 흔들기 (Shake)"
+        impulseLabel = "터치/드래그 진동"
     }
 
     public func injectImpulse(type: String, strength: Double = 1.0) {
-        impulseStrength = strength * 90.0
+        impulseStrength = strength * 95.0
         impulseLabel = type
     }
 
@@ -147,11 +224,14 @@ public final class SeismographService: ObservableObject {
     private func sampleStep() {
         // 1. Acoustic chassis & structural vibration via microphone diaphragm
         let audioLevel = Double(AudioWaveformEngine.shared.rawLevel)
-        if audioLevel > 0.035 {
-            let acousticChassisShock = pow(audioLevel, 1.3) * 60.0 * sensorSensitivity
+        if audioLevel > 0.025 {
+            let acousticChassisShock = pow(audioLevel, 1.2) * 75.0 * sensorSensitivity
             physicalMotionZ += acousticChassisShock
             physicalMotionX += acousticChassisShock * Double.random(in: -0.6...0.6)
             physicalMotionY += acousticChassisShock * Double.random(in: -0.6...0.6)
+            if acousticChassisShock > 12.0 && impulseLabel.isEmpty {
+                impulseLabel = "책상/맥북 충격 (Acoustic Chassis Shock)"
+            }
         }
 
         // 2. Hardware Test Impulse decay
@@ -160,27 +240,27 @@ public final class SeismographService: ObservableObject {
             physicalMotionX += impulse * 0.7
             physicalMotionY += impulse * 0.5
             physicalMotionZ += impulse * 1.1
-            impulseStrength *= 0.78 // fast decay
+            impulseStrength *= 0.75 // fast decay
         }
 
-        // 3. Base ambient micro-tremor noise (0.1 ~ 0.4 mg)
-        let noiseX = Double.random(in: -0.25...0.25) + physicalMotionX
-        let noiseY = Double.random(in: -0.25...0.25) + physicalMotionY
-        let noiseZ = Double.random(in: -0.25...0.25) + physicalMotionZ
+        // 3. Combine with ambient micro-tremor noise (0.1 ~ 0.3 mg)
+        let noiseX = Double.random(in: -0.2...0.2) + physicalMotionX
+        let noiseY = Double.random(in: -0.2...0.2) + physicalMotionY
+        let noiseZ = Double.random(in: -0.2...0.2) + physicalMotionZ
 
         // Smooth physical motion decay
-        physicalMotionX *= 0.68
-        physicalMotionY *= 0.68
-        physicalMotionZ *= 0.68
+        physicalMotionX *= 0.65
+        physicalMotionY *= 0.65
+        physicalMotionZ *= 0.65
 
-        if abs(physicalMotionX) < 0.5 {
-            directionChangeCount = max(0, directionChangeCount - 1)
+        if abs(physicalMotionX) < 0.3 {
+            pointerShakeCount = max(0, pointerShakeCount - 1)
         }
 
         // Calculate 3-axis magnitude & Peak Ground Acceleration (PGA)
         let rawMag = sqrt(noiseX * noiseX + noiseY * noiseY + noiseZ * noiseZ)
         let mag = rawMag * sensorSensitivity
-        let pga = mag * 1.25
+        let pga = mag * 1.2
 
         // 4. Seismological STA/LTA (Short-Term Average / Long-Term Average) Event Trigger
         let instantEnergy = mag * mag
@@ -188,18 +268,18 @@ public final class SeismographService: ObservableObject {
         ltaEnergy = ltaAlpha * instantEnergy + (1.0 - ltaAlpha) * ltaEnergy
 
         let ratio = max(0.5, staEnergy / max(0.001, ltaEnergy))
-        let triggered = ratio >= triggerThreshold || pga > 15.0
+        let triggered = ratio >= triggerThreshold || pga > 14.0
 
         self.currentPGA = pga
         self.staLtaRatio = ratio
         self.isEventTriggered = triggered
 
-        if triggered && (detectedEvents.isEmpty || Date().timeIntervalSince(detectedEvents.first?.timestamp ?? .distantPast) > 1.8) {
+        if triggered && (detectedEvents.isEmpty || Date().timeIntervalSince(detectedEvents.first?.timestamp ?? .distantPast) > 1.2) {
             let event = SeismicEvent(
                 timestamp: Date(),
                 peakPGA: pga,
                 staLtaRatio: ratio,
-                label: pga > 30.0 ? "강한 진동/흔들림 감지 (Strong Shake)" : "진동 감지 (Tremor)"
+                label: pga > 25.0 ? "\(impulseLabel) (\(String(format: "%.1f", pga)) mg)" : "진동 감지 (Tremor)"
             )
             detectedEvents.insert(event, at: 0)
             if detectedEvents.count > 30 {
