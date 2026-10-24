@@ -28,6 +28,7 @@ public struct ContentView: View {
     @State private var visualizerStyle: VisualizerStyle = .jarvisWave
     @State private var editableTranscript: String = ""
     @State private var showingCopiedToast = false
+    @State private var transcriptionViewMode: Int = 0 // 0: Segment Cards, 1: Text Editor
 
     public init() {}
 
@@ -107,11 +108,15 @@ public struct ContentView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    if speechService.detectedLanguageCode != nil {
-                        Text(speechService.detectedLanguageDisplayName)
+                    if speechService.currentLivePitchHz > 60 {
+                        Text("🎙️ 피치: \(Int(speechService.currentLivePitchHz)) Hz")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.cyan)
                     }
+
+                    Text(speechService.detectedLanguageDisplayName)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.green)
 
                     if classifier.isNoiseOrCoughDetected {
                         Text(classifier.currentSoundLabel)
@@ -241,7 +246,7 @@ public struct ContentView: View {
                             Text(loc.displayName).tag(loc)
                         }
                     }
-                    .frame(width: 190)
+                    .frame(width: 210)
 
                     // Clear Button
                     Button {
@@ -253,22 +258,28 @@ public struct ContentView: View {
                     .buttonStyle(.bordered)
                 }
 
-                // 4. Speaker Diarization (화자 분리 및 선택 바)
+                // 4. Biometric Speaker Diarization & Voice Profiling Bar
                 HStack(spacing: 10) {
-                    Label("현재 발화자 (Speaker):", systemImage: "person.wave.2.fill")
+                    Label("스마트 화자 분리 (Biometrics):", systemImage: "person.wave.2.fill")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.cyan)
 
                     ForEach(1...3, id: \.self) { id in
+                        let profile = speechService.biometricProfiles[id]
                         Button {
                             speechService.selectSpeaker(id: id)
                         } label: {
-                            HStack(spacing: 5) {
+                            HStack(spacing: 6) {
                                 Circle()
                                     .fill(speakerColor(id))
                                     .frame(width: 8, height: 8)
-                                Text(speechService.speakerNames[id] ?? "화자 \(id)")
-                                    .font(.system(size: 12, weight: speechService.currentSpeakerId == id ? .bold : .regular))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(speechService.speakerNames[id] ?? "화자 \(id)")
+                                        .font(.system(size: 11, weight: speechService.currentSpeakerId == id ? .bold : .medium))
+                                    Text(profile?.pitchDescription ?? "대기 중")
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -286,8 +297,20 @@ public struct ContentView: View {
 
                     Spacer()
 
-                    // Auto switch toggle
-                    Toggle("묵음 시 화자 자동 전환", isOn: $speechService.autoSpeakerSwitchOnPause)
+                    if audioEngine.isRunning {
+                        HStack(spacing: 5) {
+                            Image(systemName: "waveform.path")
+                                .foregroundColor(speechService.currentLivePitchHz > 60 ? .green : .secondary)
+                            Text(speechService.currentLivePitchHz > 60 ? "피치: \(Int(speechService.currentLivePitchHz)) Hz" : "음성 대기")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(speechService.currentLivePitchHz > 60 ? .green : .secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.05), in: Capsule())
+                    }
+
+                    Toggle("음향 피치 자동 분리", isOn: $speechService.smartAcousticDiarization)
                         .toggleStyle(.switch)
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
@@ -311,7 +334,7 @@ public struct ContentView: View {
 
                 // 5. Main Workspace: Transcription (Left) & AI Summarizer (Right)
                 HStack(alignment: .top, spacing: 18) {
-                    // Left Card: Live Transcription with Speaker Tags
+                    // Left Card: Live Transcription with Speaker Tags & Language Badges
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Label("화자별 실시간 전사 (Transcript)", systemImage: "text.bubble.fill")
@@ -319,6 +342,14 @@ public struct ContentView: View {
                                 .foregroundColor(.cyan)
 
                             Spacer()
+
+                            // View Mode Toggle (Segment Cards vs Raw Text)
+                            Picker("", selection: $transcriptionViewMode) {
+                                Image(systemName: "bubble.left.and.bubble.right.fill").tag(0)
+                                Image(systemName: "pencil.line").tag(1)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 80)
 
                             let currentText = currentCombinedTranscript
                             Text("\(currentText.split(separator: " ").count)단어 / \(currentText.count)자")
@@ -334,29 +365,133 @@ public struct ContentView: View {
                             .help("전사 내용 복사")
                         }
 
-                        // Text Area / Editor
-                        ZStack(alignment: .topLeading) {
-                            TextEditor(text: Binding(
-                                get: { currentCombinedTranscript },
-                                set: { editableTranscript = $0 }
-                            ))
-                            .font(.system(size: 13, design: .default))
-                            .lineSpacing(4)
-                            .padding(8)
-                            .scrollContentBackground(.hidden)
-                            .background(Color(red: 0.04, green: 0.06, blue: 0.10))
-                            .cornerRadius(12)
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1), lineWidth: 1))
+                        // Display Mode 0: Conversational Segment Cards with Biometrics & Language Badges
+                        if transcriptionViewMode == 0 {
+                            ZStack(alignment: .topLeading) {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(red: 0.04, green: 0.06, blue: 0.10))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1), lineWidth: 1))
 
-                            if currentCombinedTranscript.isEmpty {
-                                Text("마이크 녹음을 시작하면 [화자 1], [화자 2] 등 실시간 음성이 텍스트로 기록됩니다...\n기침, 재채기, 키보드 소음은 자동으로 감지되어 제외됩니다.")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary.opacity(0.6))
-                                    .padding(16)
-                                    .allowsHitTesting(false)
+                                if speechService.segments.isEmpty && speechService.currentLiveText.isEmpty {
+                                    VStack(alignment: .center, spacing: 8) {
+                                        Image(systemName: "mic.badge.plus")
+                                            .font(.system(size: 28))
+                                            .foregroundColor(.cyan.opacity(0.4))
+                                        Text("마이크 녹음을 시작하면 화자(Biometrics)와 언어가 자동 분석되어 실시간 기록됩니다.\n기침, 소음은 자동으로 필터링됩니다.")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.secondary.opacity(0.7))
+                                            .multilineTextAlignment(.center)
+                                    }
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .padding(.top, 60)
+                                } else {
+                                    ScrollView {
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            ForEach(speechService.segments) { seg in
+                                                VStack(alignment: .leading, spacing: 6) {
+                                                    HStack(spacing: 8) {
+                                                        Circle()
+                                                            .fill(speakerColor(seg.speakerId))
+                                                            .frame(width: 8, height: 8)
+                                                        Text(seg.speakerName)
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(speakerColor(seg.speakerId))
+
+                                                        if let pitch = seg.speakerPitchHz, pitch > 60 {
+                                                            Text("\(Int(pitch)) Hz")
+                                                                .font(.system(size: 10, design: .monospaced))
+                                                                .foregroundColor(.secondary)
+                                                                .padding(.horizontal, 6)
+                                                                .padding(.vertical, 2)
+                                                                .background(Color.white.opacity(0.06), in: Capsule())
+                                                        }
+
+                                                        Spacer()
+
+                                                        // Language Badge per segment
+                                                        Text(seg.detectedLanguage)
+                                                            .font(.system(size: 10, weight: .semibold))
+                                                            .foregroundColor(.white)
+                                                            .padding(.horizontal, 8)
+                                                            .padding(.vertical, 2)
+                                                            .background(Color.white.opacity(0.08), in: Capsule())
+
+                                                        Text(formatTime(seg.timestamp))
+                                                            .font(.system(size: 10, design: .monospaced))
+                                                            .foregroundColor(.secondary)
+                                                    }
+
+                                                    Text(seg.text)
+                                                        .font(.system(size: 13))
+                                                        .foregroundColor(.white.opacity(0.95))
+                                                        .textSelection(.enabled)
+                                                }
+                                                .padding(12)
+                                                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(speakerColor(seg.speakerId).opacity(0.2), lineWidth: 1))
+                                            }
+
+                                            // Live utterance preview
+                                            if !speechService.currentLiveText.isEmpty {
+                                                VStack(alignment: .leading, spacing: 6) {
+                                                    HStack(spacing: 8) {
+                                                        Circle()
+                                                            .fill(speakerColor(speechService.currentSpeakerId))
+                                                            .frame(width: 8, height: 8)
+                                                        Text(speechService.speakerNames[speechService.currentSpeakerId] ?? "화자 \(speechService.currentSpeakerId)")
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(speakerColor(speechService.currentSpeakerId))
+
+                                                        Text("말하는 중...")
+                                                            .font(.system(size: 10, weight: .semibold))
+                                                            .foregroundColor(.cyan)
+
+                                                        Spacer()
+
+                                                        Text(speechService.detectedLanguageDisplayName)
+                                                            .font(.system(size: 10))
+                                                            .foregroundColor(.secondary)
+                                                    }
+
+                                                    Text(speechService.currentLiveText)
+                                                        .font(.system(size: 13, weight: .medium))
+                                                        .foregroundColor(.cyan.opacity(0.9))
+                                                }
+                                                .padding(12)
+                                                .background(Color.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.4), lineWidth: 1))
+                                            }
+                                        }
+                                        .padding(10)
+                                    }
+                                }
                             }
+                            .frame(minHeight: 280)
+                        } else {
+                            // Display Mode 1: Raw Editable Text Area
+                            ZStack(alignment: .topLeading) {
+                                TextEditor(text: Binding(
+                                    get: { currentCombinedTranscript },
+                                    set: { editableTranscript = $0 }
+                                ))
+                                .font(.system(size: 13, design: .default))
+                                .lineSpacing(4)
+                                .padding(8)
+                                .scrollContentBackground(.hidden)
+                                .background(Color(red: 0.04, green: 0.06, blue: 0.10))
+                                .cornerRadius(12)
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1), lineWidth: 1))
+
+                                if currentCombinedTranscript.isEmpty {
+                                    Text("마이크 녹음을 시작하면 화자별 실시간 음성이 텍스트로 기록됩니다...")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary.opacity(0.6))
+                                        .padding(16)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                            .frame(minHeight: 280)
                         }
-                        .frame(minHeight: 260)
                     }
                     .frame(maxWidth: .infinity)
 
@@ -498,7 +633,7 @@ public struct ContentView: View {
                                 .padding(16)
                             }
                         }
-                        .frame(minHeight: 260)
+                        .frame(minHeight: 280)
                     }
                     .frame(maxWidth: .infinity)
                 }
@@ -537,7 +672,7 @@ public struct ContentView: View {
                             Text(".env 파일에서 보안 로드됨:")
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(.green)
-                            Text("gen-lang-client-0970012511")
+                            Text("AIzaSyBZ...DlR8")
                                 .font(.system(size: 12, design: .monospaced))
                                 .foregroundColor(.white)
                             Spacer()
@@ -550,7 +685,7 @@ public struct ContentView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green.opacity(0.3), lineWidth: 1))
                     }
 
-                    Text("비용 최적화를 위해 가장 저렴한 최신 `gemini-2.0-flash-lite` 및 `gemini-1.5-flash-8b` 모델만 사용하도록 제한되어 있습니다.")
+                    Text("비용 최적화를 위해 가장 저렴한 최신 `gemini-flash-lite-latest` 및 `gemini-flash-latest` 모델만 사용하도록 제한되어 있습니다.")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
 
@@ -579,6 +714,25 @@ public struct ContentView: View {
                         .padding(8)
                         .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
                     }
+                }
+                .padding(16)
+                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
+
+                // Acoustic Biometrics & Diarization Engine Info
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: "person.2.wave.2.fill")
+                            .foregroundColor(.cyan)
+                        Text("음향 바이오메트릭스 & 화자 분리 (Acoustic Diarization)")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+
+                    Text("발화자의 기본 주파수(F0 피치)와 음색 스펙트럼 중심(Centroid)을 Accelerate vDSP를 통해 실시간 추출하여 각 화자의 성문(Voiceprint)을 학습합니다. 발언자 교대 시 음성 특징 차이를 분석하여 자동으로 화자를 분리합니다.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+
+                    Toggle("스마트 음향 피치 화자 분리 활성화", isOn: $speechService.smartAcousticDiarization)
+                        .toggleStyle(.switch)
                 }
                 .padding(16)
                 .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
@@ -657,6 +811,12 @@ public struct ContentView: View {
         case 3: return .orange
         default: return .green
         }
+    }
+
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "mm:ss"
+        return formatter.string(from: date)
     }
 
     private func toggleRecording() {

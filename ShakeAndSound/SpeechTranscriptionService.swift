@@ -4,20 +4,53 @@ import NaturalLanguage
 import AVFoundation
 import Combine
 
-public struct TranscriptionSegment: Identifiable, Equatable {
-    public let id = UUID()
+public struct TranscriptionSegment: Identifiable, Equatable, Sendable {
+    public let id: UUID
     public let timestamp: Date
     public let text: String
     public let speakerId: Int
     public let speakerName: String
-    public let detectedLanguage: String?
+    public let detectedLanguage: String
+    public let speakerPitchHz: Float?
+    public let acousticLabel: String?
 
-    public init(timestamp: Date = Date(), text: String, speakerId: Int = 1, speakerName: String = "화자 1", detectedLanguage: String? = nil) {
+    public init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        text: String,
+        speakerId: Int = 1,
+        speakerName: String = "화자 1",
+        detectedLanguage: String = "🇰🇷 한국어",
+        speakerPitchHz: Float? = nil,
+        acousticLabel: String? = nil
+    ) {
+        self.id = id
         self.timestamp = timestamp
         self.text = text
         self.speakerId = speakerId
         self.speakerName = speakerName
         self.detectedLanguage = detectedLanguage
+        self.speakerPitchHz = speakerPitchHz
+        self.acousticLabel = acousticLabel
+    }
+}
+
+public struct VoiceBiometricProfile: Sendable, Identifiable {
+    public let id: Int // 1, 2, 3
+    public var name: String
+    public var averagePitchHz: Float
+    public var sampleCount: Int
+
+    public var pitchDescription: String {
+        guard averagePitchHz > 0 else { return "음성 프로필 대기 중" }
+        let hz = Int(averagePitchHz)
+        if averagePitchHz < 140 {
+            return "\(hz) Hz • 굵은 저음"
+        } else if averagePitchHz < 195 {
+            return "\(hz) Hz • 표준 중음"
+        } else {
+            return "\(hz) Hz • 밝은 고음"
+        }
     }
 }
 
@@ -42,7 +75,7 @@ public enum SupportedLocale: String, CaseIterable, Identifiable {
         case .spanish: return "🇪🇸 Español (Spanish)"
         case .french: return "🇫🇷 Français (French)"
         case .german: return "🇩🇪 Deutsch (German)"
-        case .auto: return "🌐 자동 감지 (Auto Detect)"
+        case .auto: return "🌐 다국어 스마트 자동 감지"
         }
     }
 
@@ -74,13 +107,20 @@ public final class SpeechTranscriptionService: ObservableObject {
     @Published public var errorMessage: String? = nil
     @Published public private(set) var authorizationStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
 
-    // MARK: - Speaker Diarization State
+    // MARK: - Voice Biometrics & Smart Diarization
     @Published public var currentSpeakerId: Int = 1
     @Published public var speakerNames: [Int: String] = [
         1: "화자 1",
         2: "화자 2",
         3: "화자 3"
     ]
+    @Published public var biometricProfiles: [Int: VoiceBiometricProfile] = [
+        1: VoiceBiometricProfile(id: 1, name: "화자 1", averagePitchHz: 125, sampleCount: 0),
+        2: VoiceBiometricProfile(id: 2, name: "화자 2", averagePitchHz: 215, sampleCount: 0),
+        3: VoiceBiometricProfile(id: 3, name: "화자 3", averagePitchHz: 170, sampleCount: 0)
+    ]
+    @Published public var currentLivePitchHz: Float = 0.0
+    @Published public var smartAcousticDiarization: Bool = true
     @Published public var autoSpeakerSwitchOnPause: Bool = true
 
     // MARK: - Private Speech Objects
@@ -97,7 +137,8 @@ public final class SpeechTranscriptionService: ObservableObject {
             return currentLiveText
         }
         let formattedSegments = segments.map { seg in
-            "[\(seg.speakerName)] \(formatTimestamp(seg.timestamp)): \(seg.text)"
+            let pitchTag = seg.speakerPitchHz != nil ? " [\(Int(seg.speakerPitchHz!))Hz]" : ""
+            return "[\(seg.speakerName)\(pitchTag) • \(seg.detectedLanguage)] \(formatTimestamp(seg.timestamp)):\n\(seg.text)"
         }.joined(separator: "\n\n")
 
         if !currentLiveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -115,7 +156,7 @@ public final class SpeechTranscriptionService: ObservableObject {
     public func updateLanguageDisplay() {
         if selectedLocale == .auto {
             if detectedLanguageCode == nil || detectedLanguageCode == "auto" {
-                detectedLanguageDisplayName = "🌐 자동 감지 대기..."
+                detectedLanguageDisplayName = "🌐 다국어 스마트 감지 활성"
                 detectedLanguageConfidence = 0.0
             }
         } else {
@@ -175,17 +216,14 @@ public final class SpeechTranscriptionService: ObservableObject {
         self.lastSpeechTime = Date()
 
         // Silence check timer for speaker diarization
-        silenceCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        silenceCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 if self.isTranscribing && !self.currentLiveText.isEmpty {
                     let elapsed = Date().timeIntervalSince(self.lastSpeechTime)
-                    // If speaker paused for > 1.6 seconds, commit segment and optionally switch speaker turn
-                    if elapsed > 1.6 {
+                    // If speaker paused for > 1.2 seconds, commit segment and allow next speaker turn
+                    if elapsed > 1.2 {
                         self.commitCurrentLiveText()
-                        if self.autoSpeakerSwitchOnPause {
-                            self.currentSpeakerId = (self.currentSpeakerId == 1) ? 2 : 1
-                        }
                     }
                 }
             }
@@ -219,9 +257,11 @@ public final class SpeechTranscriptionService: ObservableObject {
                     self.currentLiveText = transcribedString
                     self.lastSpeechTime = Date()
 
-                    // Only run auto-language detector if auto mode is enabled
+                    // Real-time language classification for live feedback
+                    let (langBadge, conf) = self.classifySegmentLanguage(text: transcribedString)
                     if self.selectedLocale == .auto {
-                        self.analyzeSpokenLanguage(text: transcribedString)
+                        self.detectedLanguageDisplayName = langBadge
+                        self.detectedLanguageConfidence = conf
                     }
 
                     if result.isFinal {
@@ -238,6 +278,13 @@ public final class SpeechTranscriptionService: ObservableObject {
             }
         }
 
+        // Acoustic Voice Feature Analysis (Pitch + Voice Activity + Diarization)
+        audioEngine.onAcousticFeatures = { [weak self] features in
+            Task { @MainActor [weak self] in
+                self?.processAcousticFeatures(features)
+            }
+        }
+
         // Hook audio engine buffer tap with cough & noise suppression filter
         audioEngine.onBufferReceived = { [weak self] buffer, _ in
             guard let self = self else { return }
@@ -245,6 +292,44 @@ public final class SpeechTranscriptionService: ObservableObject {
                 guard let self = self else { return }
                 if !AudioClassifierService.shared.shouldSuppressAudio() {
                     self.recognitionRequest?.append(buffer)
+                }
+            }
+        }
+    }
+
+    private func processAcousticFeatures(_ features: AcousticVoiceFeatures) {
+        guard isTranscribing else { return }
+
+        if features.pitchHz > 60.0 {
+            self.currentLivePitchHz = features.pitchHz
+
+            // Update current speaker's biometric pitch profile with running average
+            if var profile = biometricProfiles[currentSpeakerId] {
+                profile.averagePitchHz = (profile.averagePitchHz * 0.94) + (features.pitchHz * 0.06)
+                profile.sampleCount += 1
+                biometricProfiles[currentSpeakerId] = profile
+            }
+
+            // Biometric Acoustic Speaker Diarization:
+            // If speaker paused (> 0.75s) and new voice has distinct pitch, switch speaker turn automatically
+            let pauseDuration = Date().timeIntervalSince(lastSpeechTime)
+            if smartAcousticDiarization && pauseDuration > 0.75 && features.isVoiceActive {
+                var bestCandidate = currentSpeakerId
+                var closestDistance: Float = Float.infinity
+
+                for (spkId, profile) in biometricProfiles {
+                    let distance = abs(profile.averagePitchHz - features.pitchHz)
+                    if distance < closestDistance {
+                        closestDistance = distance
+                        bestCandidate = spkId
+                    }
+                }
+
+                // If closest candidate is different and has a confident pitch separation (> 28 Hz)
+                let currentSpeakerDistance = abs((biometricProfiles[currentSpeakerId]?.averagePitchHz ?? 0) - features.pitchHz)
+                if bestCandidate != currentSpeakerId && currentSpeakerDistance > 28.0 && closestDistance < 22.0 {
+                    commitCurrentLiveText()
+                    currentSpeakerId = bestCandidate
                 }
             }
         }
@@ -272,6 +357,7 @@ public final class SpeechTranscriptionService: ObservableObject {
 
         audioEngine.stop()
         audioEngine.onBufferReceived = nil
+        audioEngine.onAcousticFeatures = nil
 
         recognitionRequest?.endAudio()
         recognitionTask?.finish()
@@ -279,6 +365,7 @@ public final class SpeechTranscriptionService: ObservableObject {
         recognitionRequest = nil
         recognitionTask = nil
         isTranscribing = false
+        currentLivePitchHz = 0.0
 
         commitCurrentLiveText()
     }
@@ -289,6 +376,7 @@ public final class SpeechTranscriptionService: ObservableObject {
         segments.removeAll()
         languageHistory.removeAll()
         errorMessage = nil
+        currentLivePitchHz = 0.0
         updateLanguageDisplay()
     }
 
@@ -303,6 +391,10 @@ public final class SpeechTranscriptionService: ObservableObject {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             speakerNames[id] = trimmed
+            if var profile = biometricProfiles[id] {
+                profile.name = trimmed
+                biometricProfiles[id] = profile
+            }
         }
     }
 
@@ -311,30 +403,30 @@ public final class SpeechTranscriptionService: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         let speakerName = speakerNames[currentSpeakerId] ?? "화자 \(currentSpeakerId)"
+        let (langBadge, _) = classifySegmentLanguage(text: trimmed)
+        let pitch = currentLivePitchHz > 60 ? currentLivePitchHz : biometricProfiles[currentSpeakerId]?.averagePitchHz
+
         let segment = TranscriptionSegment(
             timestamp: Date(),
             text: trimmed,
             speakerId: currentSpeakerId,
             speakerName: speakerName,
-            detectedLanguage: detectedLanguageDisplayName
+            detectedLanguage: langBadge,
+            speakerPitchHz: pitch,
+            acousticLabel: biometricProfiles[currentSpeakerId]?.pitchDescription
         )
         segments.append(segment)
         currentLiveText = ""
     }
 
-    // MARK: - Robust Script-Aware Language Detection
-    private func analyzeSpokenLanguage(text: String) {
-        guard selectedLocale == .auto else { return }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 4 else { return }
-
-        // 1. Deterministic Unicode Script Analysis
+    // MARK: - State-of-the-Art Language Input Distinction
+    public func classifySegmentLanguage(text: String) -> (displayName: String, confidence: Double) {
         var hangulCount = 0
-        var kanaCount = 0
         var latinCount = 0
+        var kanaCount = 0
         var cjkCount = 0
 
-        for scalar in trimmed.unicodeScalars {
+        for scalar in text.unicodeScalars {
             let val = scalar.value
             if (val >= 0xAC00 && val <= 0xD7AF) || (val >= 0x1100 && val <= 0x11FF) || (val >= 0x3130 && val <= 0x318F) {
                 hangulCount += 1
@@ -347,47 +439,36 @@ public final class SpeechTranscriptionService: ObservableObject {
             }
         }
 
-        let totalMeaningful = hangulCount + kanaCount + latinCount + cjkCount
-        guard totalMeaningful >= 3 else { return }
+        let total = hangulCount + latinCount + kanaCount + cjkCount
+        guard total > 0 else { return ("🇰🇷 한국어", 1.0) }
 
-        let detectedCode: String
-        let confidence: Double
+        if kanaCount > 0 {
+            return ("🇯🇵 日本語", 0.95)
+        }
+        if cjkCount >= 2 && hangulCount == 0 && latinCount == 0 {
+            return ("🇨🇳 中文", 0.90)
+        }
 
-        if Double(hangulCount) / Double(totalMeaningful) >= 0.30 {
-            detectedCode = "ko"
-            confidence = 0.98
-        } else if kanaCount > 0 {
-            detectedCode = "ja"
-            confidence = 0.95
-        } else if cjkCount >= 2 && latinCount == 0 {
-            detectedCode = "zh"
-            confidence = 0.90
-        } else if Double(latinCount) / Double(totalMeaningful) >= 0.60 {
+        // Bilingual / Code-switching check (Korean + English technical terms mixed)
+        if hangulCount >= 2 && latinCount >= 2 {
+            return ("🇰🇷 한/영 혼용 (Bilingual)", 0.99)
+        }
+
+        if hangulCount >= 1 {
+            return ("🇰🇷 한국어", 0.98)
+        }
+
+        if latinCount >= 3 {
             languageRecognizer.reset()
-            languageRecognizer.processString(trimmed)
+            languageRecognizer.processString(text)
             if let dominant = languageRecognizer.dominantLanguage {
-                detectedCode = dominant.rawValue
-                confidence = languageRecognizer.languageHypotheses(withMaximum: 1)[dominant] ?? 0.85
-            } else {
-                detectedCode = "en"
-                confidence = 0.80
+                let code = dominant.rawValue
+                return (localizedLanguageName(for: code), 0.90)
             }
-        } else {
-            return
+            return ("🇺🇸 English", 0.90)
         }
 
-        // 2. Hysteresis (Voting filter to prevent jitter)
-        languageHistory.append(detectedCode)
-        if languageHistory.count > 5 {
-            languageHistory.removeFirst()
-        }
-
-        let codeVotes = languageHistory.filter { $0 == detectedCode }.count
-        if codeVotes >= 2 || confidence >= 0.95 {
-            self.detectedLanguageCode = detectedCode
-            self.detectedLanguageConfidence = confidence
-            self.detectedLanguageDisplayName = localizedLanguageName(for: detectedCode)
-        }
+        return ("🇰🇷 한국어", 0.90)
     }
 
     private func localizedLanguageName(for code: String) -> String {
