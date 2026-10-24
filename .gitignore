@@ -13,3 +13,8 @@ xcuserdata/
 
 # Swift Package Manager
 .build/
+
+# Environment variables
+.env
+*.env
+.env.*

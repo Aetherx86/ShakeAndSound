@@ -108,7 +108,7 @@ public struct ContentView: View {
                     }
 
                     if speechService.detectedLanguageCode != nil {
-                        Text("감지 언어: \(speechService.detectedLanguageDisplayName)")
+                        Text(speechService.detectedLanguageDisplayName)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.cyan)
                     }
@@ -117,6 +117,12 @@ public struct ContentView: View {
                         Text(classifier.currentSoundLabel)
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(.orange)
+                    }
+
+                    if let usage = summarizer.lastTokenUsage {
+                        Text("잔여 토큰: \(String(format: "%.1f", usage.remainingPercentage))%")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.green)
                     }
                 }
                 .padding(12)
@@ -357,19 +363,19 @@ public struct ContentView: View {
                     // Right Card: AI Summarizer & Executive Brief
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Label("AI 핵심 요약 & 브리핑", systemImage: "sparkles")
+                            Label("AI 핵심 요약 (Flash-Lite / Local)", systemImage: "sparkles")
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(.purple)
 
                             Spacer()
 
-                            // Engine selector
+                            // Model Picker restricted only to Flash-Lite & cheapest options
                             Picker("", selection: $summarizer.selectedEngine) {
                                 ForEach(SummarizerEngine.allCases) { engine in
                                     Text(engine.rawValue).tag(engine)
                                 }
                             }
-                            .frame(width: 220)
+                            .frame(width: 250)
                         }
 
                         // Summarize Action Bar
@@ -386,10 +392,10 @@ public struct ContentView: View {
                                     if summarizer.isSummarizing {
                                         ProgressView()
                                             .controlSize(.small)
-                                        Text("AI 요약 분석 중...")
+                                        Text("요약 분석 중...")
                                     } else {
                                         Image(systemName: "wand.and.stars")
-                                        Text("내용 요약하기 (Summarize)")
+                                        Text("요약하기 (Flash-Lite)")
                                     }
                                 }
                                 .font(.system(size: 12, weight: .bold))
@@ -411,6 +417,57 @@ public struct ContentView: View {
                             }
                         }
 
+                        // Token Usage Progress & Remaining Percentage Card
+                        if let usage = summarizer.lastTokenUsage {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Image(systemName: "gauge.with.dots.needle.bottom.50percent")
+                                        .foregroundColor(.green)
+                                    Text("Gemini Flash-Lite 토큰 사용 현황")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(.white)
+
+                                    Spacer()
+
+                                    Text("잔여 \(String(format: "%.2f", usage.remainingPercentage))% 남음")
+                                        .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                                        .foregroundColor(.green)
+                                }
+
+                                GeometryReader { geo in
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(Color.white.opacity(0.1))
+                                            .frame(height: 6)
+
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(LinearGradient(
+                                                colors: [.green, .mint],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            ))
+                                            .frame(width: max(4, geo.size.width * CGFloat(usage.remainingPercentage / 100.0)), height: 6)
+                                    }
+                                }
+                                .frame(height: 6)
+
+                                HStack {
+                                    Text("소모 토큰: \(usage.totalTokens) (입력: \(usage.promptTokens) / 생성: \(usage.candidatesTokens))")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+
+                                    Spacer()
+
+                                    Text("잔여: \(usage.remainingTokens.formatted()) / 1,048,576 토큰")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green.opacity(0.25), lineWidth: 1))
+                        }
+
                         // Summary Display Area
                         ZStack(alignment: .topLeading) {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -429,7 +486,7 @@ public struct ContentView: View {
                                             Image(systemName: "brain.head.profile")
                                                 .font(.system(size: 32))
                                                 .foregroundColor(.purple.opacity(0.4))
-                                            Text("음성 입력 후 '내용 요약하기'를 누르면\n화자별 발언 분리, 핵심 요약, 액션 플랜이 생성됩니다.")
+                                            Text("음성 입력 후 '요약하기'를 누르면\n화자별 발언 분리, 핵심 요약, 토큰 잔여량이 표시됩니다.")
                                                 .font(.system(size: 12))
                                                 .foregroundColor(.secondary)
                                                 .multilineTextAlignment(.center)
@@ -457,6 +514,75 @@ public struct ContentView: View {
                 Text("설정 및 AI 모델 연동")
                     .font(.system(size: 18, weight: .bold))
 
+                // Gemini API Configuration (.env integration)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Image(systemName: "key.fill")
+                            .foregroundColor(.orange)
+                        Text("Google Gemini Flash-Lite API 설정")
+                            .font(.system(size: 14, weight: .bold))
+                        Spacer()
+                        Text("최저가 모델 전용 ⚡")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.green)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.green.opacity(0.12), in: Capsule())
+                    }
+
+                    if summarizer.isKeyFromEnv {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .foregroundColor(.green)
+                            Text(".env 파일에서 보안 로드됨:")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.green)
+                            Text("gen-lang-client-0970012511")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Text(".gitignore 적용 완료 🔒")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(10)
+                        .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green.opacity(0.3), lineWidth: 1))
+                    }
+
+                    Text("비용 최적화를 위해 가장 저렴한 최신 `gemini-2.0-flash-lite` 및 `gemini-1.5-flash-8b` 모델만 사용하도록 제한되어 있습니다.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+
+                    HStack {
+                        SecureField("Gemini API Key", text: $summarizer.geminiApiKey)
+                            .textFieldStyle(.roundedBorder)
+
+                        if !summarizer.geminiApiKey.isEmpty && !summarizer.isKeyFromEnv {
+                            Button("지우기") {
+                                summarizer.geminiApiKey = ""
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    // Token Usage Session Summary
+                    if summarizer.sessionTotalTokens > 0 {
+                        HStack {
+                            Image(systemName: "chart.bar.xaxis")
+                                .foregroundColor(.cyan)
+                            Text("현재 세션 누적 토큰 사용량: \(summarizer.sessionTotalTokens.formatted()) 토큰")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.white)
+                            Spacer()
+                        }
+                        .padding(8)
+                        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+                .padding(16)
+                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
+
                 // Noise & Cough Filter Settings
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -472,39 +598,6 @@ public struct ContentView: View {
 
                     Toggle("기침 및 소음 자동 배제 활성화", isOn: $classifier.enableNoiseAndCoughSuppression)
                         .toggleStyle(.switch)
-                }
-                .padding(16)
-                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
-
-                // Gemini API Configuration
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: "key.fill")
-                            .foregroundColor(.orange)
-                        Text("Google Gemini API 설정 (외부 클라우드 AI)")
-                            .font(.system(size: 14, weight: .bold))
-                    }
-
-                    Text("Google Gemini를 사용하려면 API Key를 입력하세요. API 키가 없어도 내장 Apple Intelligence / NaturalLanguage 스마트 엔진을 통해 무료로 완벽히 오프라인 요약이 가능합니다.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-
-                    HStack {
-                        SecureField("Gemini API Key (AIza...)", text: $summarizer.geminiApiKey)
-                            .textFieldStyle(.roundedBorder)
-
-                        if !summarizer.geminiApiKey.isEmpty {
-                            Button("지우기") {
-                                summarizer.geminiApiKey = ""
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-
-                    Link(destination: URL(string: "https://aistudio.google.com/app/apikey")!) {
-                        Label("Google AI Studio에서 무료 API Key 발급받기", systemImage: "arrow.up.right")
-                            .font(.system(size: 11))
-                    }
                 }
                 .padding(16)
                 .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))

@@ -2,22 +2,51 @@ import Foundation
 import NaturalLanguage
 import Combine
 
-public enum SummarizerEngine: String, CaseIterable, Identifiable {
+public enum SummarizerEngine: String, CaseIterable, Identifiable, Sendable {
+    case geminiFlashLite = "Gemini 2.0 Flash-Lite (Cheapest ⚡)"
+    case geminiFlash8B = "Gemini 1.5 Flash-8B (Ultra Low Cost)"
     case smartLocal = "Smart On-Device (Apple Intelligence / NL)"
-    case geminiFlash = "Google Gemini 1.5 Flash (Cloud AI)"
-    case geminiPro = "Google Gemini 1.5 Pro (Cloud AI)"
 
     public var id: String { rawValue }
 
     public var requiresApiKey: Bool {
         switch self {
         case .smartLocal: return false
-        case .geminiFlash, .geminiPro: return true
+        case .geminiFlashLite, .geminiFlash8B: return true
+        }
+    }
+
+    public var modelName: String {
+        switch self {
+        case .geminiFlashLite: return "gemini-2.0-flash-lite"
+        case .geminiFlash8B: return "gemini-1.5-flash-8b"
+        case .smartLocal: return "on-device-nl"
         }
     }
 }
 
-public struct AudioSummaryResult: Identifiable {
+public struct TokenUsageInfo: Identifiable, Sendable {
+    public let id = UUID()
+    public let timestamp = Date()
+    public let promptTokens: Int
+    public let candidatesTokens: Int
+    public let totalTokens: Int
+    public let maxContextTokens: Int = 1_048_576 // 1M tokens limit for Gemini Flash Lite
+
+    public var usedPercentage: Double {
+        return (Double(totalTokens) / Double(maxContextTokens)) * 100.0
+    }
+
+    public var remainingPercentage: Double {
+        return max(0.0, 100.0 - usedPercentage)
+    }
+
+    public var remainingTokens: Int {
+        return max(0, maxContextTokens - totalTokens)
+    }
+}
+
+public struct AudioSummaryResult: Identifiable, Sendable {
     public let id = UUID()
     public let timestamp = Date()
     public let engine: SummarizerEngine
@@ -25,24 +54,85 @@ public struct AudioSummaryResult: Identifiable {
     public let formattedMarkdown: String
     public let detectedTopics: [String]
     public let sentiment: String
+    public let tokenUsage: TokenUsageInfo?
+
+    public nonisolated init(
+        engine: SummarizerEngine,
+        originalWordCount: Int,
+        formattedMarkdown: String,
+        detectedTopics: [String],
+        sentiment: String,
+        tokenUsage: TokenUsageInfo? = nil
+    ) {
+        self.engine = engine
+        self.originalWordCount = originalWordCount
+        self.formattedMarkdown = formattedMarkdown
+        self.detectedTopics = detectedTopics
+        self.sentiment = sentiment
+        self.tokenUsage = tokenUsage
+    }
 }
 
 @MainActor
 public final class SummarizationService: ObservableObject {
     public static let shared = SummarizationService()
 
-    @Published public var selectedEngine: SummarizerEngine = .smartLocal
+    @Published public var selectedEngine: SummarizerEngine = .geminiFlashLite
     @Published public var geminiApiKey: String = "" {
         didSet {
             UserDefaults.standard.set(geminiApiKey, forKey: "gemini_api_key")
         }
     }
+    @Published public private(set) var isKeyFromEnv: Bool = false
     @Published public private(set) var isSummarizing: Bool = false
     @Published public private(set) var currentSummary: AudioSummaryResult? = nil
+    @Published public private(set) var lastTokenUsage: TokenUsageInfo? = nil
+    @Published public private(set) var sessionTotalTokens: Int = 0
     @Published public var errorMessage: String? = nil
 
     public init() {
-        self.geminiApiKey = UserDefaults.standard.string(forKey: "gemini_api_key") ?? ""
+        // 1. Try loading from .env file first
+        if let envKey = Self.loadGeminiKeyFromEnv(), !envKey.isEmpty {
+            self.geminiApiKey = envKey
+            self.isKeyFromEnv = true
+        } else if let envVar = ProcessInfo.processInfo.environment["GEMINI_API_KEY"], !envVar.isEmpty {
+            self.geminiApiKey = envVar
+            self.isKeyFromEnv = true
+        } else {
+            self.geminiApiKey = UserDefaults.standard.string(forKey: "gemini_api_key") ?? ""
+            self.isKeyFromEnv = false
+        }
+    }
+
+    // MARK: - .env Loader
+    public static func loadGeminiKeyFromEnv() -> String? {
+        let possiblePaths = [
+            "/Users/sushikim/Documents/ShakeAndSound/.env",
+            FileManager.default.currentDirectoryPath + "/.env",
+            Bundle.main.bundlePath + "/.env",
+            Bundle.main.bundlePath + "/Contents/Resources/.env"
+        ]
+
+        for path in possiblePaths {
+            guard FileManager.default.fileExists(atPath: path),
+                  let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
+                continue
+            }
+
+            for line in contents.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("#") || trimmed.isEmpty { continue }
+                let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+                if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces) == "GEMINI_API_KEY" {
+                    let key = parts[1].trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
+                    if !key.isEmpty {
+                        return key
+                    }
+                }
+            }
+        }
+        return nil
     }
 
     public func summarize(transcript: String, languageHint: String? = nil) async {
@@ -60,11 +150,11 @@ public final class SummarizationService: ObservableObject {
             case .smartLocal:
                 let result = await generateSmartLocalSummary(text: trimmed, languageHint: languageHint)
                 self.currentSummary = result
-            case .geminiFlash:
-                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-1.5-flash", languageHint: languageHint)
+            case .geminiFlashLite:
+                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-2.0-flash-lite", languageHint: languageHint)
                 self.currentSummary = result
-            case .geminiPro:
-                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-1.5-pro", languageHint: languageHint)
+            case .geminiFlash8B:
+                let result = try await generateGeminiSummary(text: trimmed, modelName: "gemini-1.5-flash-8b", languageHint: languageHint)
                 self.currentSummary = result
             }
         } catch {
@@ -185,23 +275,24 @@ public final class SummarizationService: ObservableObject {
                 md += "- **언어**: \(lang)\n"
             }
 
-            md += "\n> _💡 로컬 Apple NaturalLanguage 엔진으로 즉시 생성된 요약입니다. 클라우드 Gemini 모델을 선택하면 더욱 심도 있는 분석이 가능합니다._"
+            md += "\n> _💡 로컬 Apple NaturalLanguage 엔진으로 즉시 생성된 요약입니다. (토큰 소모 없음)_"
 
             return AudioSummaryResult(
                 engine: .smartLocal,
                 originalWordCount: wordCount,
                 formattedMarkdown: md,
                 detectedTopics: Array(sortedKeywords),
-                sentiment: sentimentDescription
+                sentiment: sentimentDescription,
+                tokenUsage: nil
             )
         }.value
     }
 
-    // MARK: - Gemini API Summarization
+    // MARK: - Gemini API Summarization (Flash-Lite / Flash-8B)
     private func generateGeminiSummary(text: String, modelName: String, languageHint: String?) async throws -> AudioSummaryResult {
         guard !geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NSError(domain: "SummarizationService", code: 401, userInfo: [
-                NSLocalizedDescriptionKey: "Gemini API 키가 설정되지 않았습니다. 설정 탭에서 API 키를 입력해주세요."
+                NSLocalizedDescriptionKey: "Gemini API 키가 설정되지 않았습니다. .env 파일 또는 설정 탭에서 API 키를 입력해주세요."
             ])
         }
 
@@ -238,7 +329,7 @@ public final class SummarizationService: ObservableObject {
         ### 🏷️ 핵심 키워드
         `#키워드1` `#키워드2` `#키워드3`
 
-        언어 힌트: \(languageHint ?? "자동")
+        언어 힌트: \(languageHint ?? "한국어")
         친절하고 명확하며 세련된 톤으로 정리해주세요.
         """
 
@@ -288,13 +379,33 @@ public final class SummarizationService: ObservableObject {
             throw NSError(domain: "SummarizationService", code: 502, userInfo: [NSLocalizedDescriptionKey: "Gemini 응답 형식이 올바르지 않습니다."])
         }
 
+        // Parse token usage metadata
+        var usageInfo: TokenUsageInfo? = nil
+        if let usageDict = json?["usageMetadata"] as? [String: Any] {
+            let promptTokens = usageDict["promptTokenCount"] as? Int ?? 0
+            let candidatesTokens = usageDict["candidatesTokenCount"] as? Int ?? 0
+            let totalTokens = usageDict["totalTokenCount"] as? Int ?? (promptTokens + candidatesTokens)
+
+            let info = TokenUsageInfo(
+                promptTokens: promptTokens,
+                candidatesTokens: candidatesTokens,
+                totalTokens: totalTokens
+            )
+            usageInfo = info
+            self.lastTokenUsage = info
+            self.sessionTotalTokens += totalTokens
+        }
+
         let words = text.split(separator: " ").count
+        let engine = modelName.contains("8b") ? SummarizerEngine.geminiFlash8B : SummarizerEngine.geminiFlashLite
+
         return AudioSummaryResult(
-            engine: modelName.contains("pro") ? .geminiPro : .geminiFlash,
+            engine: engine,
             originalWordCount: words,
             formattedMarkdown: summaryText,
             detectedTopics: [],
-            sentiment: "AI 분석 완료"
+            sentiment: "AI 분석 완료",
+            tokenUsage: usageInfo
         )
     }
 }
