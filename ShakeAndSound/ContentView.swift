@@ -211,34 +211,31 @@ public struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(audioEngine.isRunning ? .red : .cyan)
 
-                    // Auto Detected Language Chip
+                    // Language Mode Badge (Fixed or Auto)
                     HStack(spacing: 6) {
-                        Image(systemName: "globe.badge.chevron.backward")
-                            .foregroundColor(.cyan)
-                        Text("언어: \(speechService.detectedLanguageDisplayName)")
+                        Image(systemName: speechService.selectedLocale == .auto ? "globe.badge.chevron.backward" : "checkmark.seal.fill")
+                            .foregroundColor(speechService.selectedLocale == .auto ? .cyan : .green)
+                        Text(speechService.detectedLanguageDisplayName)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(.white)
-
-                        if speechService.detectedLanguageConfidence > 0 {
-                            Text(String(format: "(%.0f%%)", speechService.detectedLanguageConfidence * 100))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .background(Color.white.opacity(0.06), in: Capsule())
-                    .overlay(Capsule().stroke(Color.cyan.opacity(0.3), lineWidth: 1))
+                    .overlay(Capsule().stroke(speechService.selectedLocale == .auto ? Color.cyan.opacity(0.3) : Color.green.opacity(0.5), lineWidth: 1))
 
                     Spacer()
 
                     // Recognition Language Picker
-                    Picker("", selection: $speechService.selectedLocale) {
+                    Picker("", selection: Binding(
+                        get: { speechService.selectedLocale },
+                        set: { speechService.setLocale($0, audioEngine: audioEngine) }
+                    )) {
                         ForEach(SupportedLocale.allCases) { loc in
                             Text(loc.displayName).tag(loc)
                         }
                     }
-                    .frame(width: 170)
+                    .frame(width: 190)
 
                     // Clear Button
                     Button {

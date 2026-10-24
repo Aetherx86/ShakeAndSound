@@ -22,7 +22,6 @@ public struct TranscriptionSegment: Identifiable, Equatable {
 }
 
 public enum SupportedLocale: String, CaseIterable, Identifiable {
-    case auto = "auto"
     case korean = "ko-KR"
     case english = "en-US"
     case japanese = "ja-JP"
@@ -30,12 +29,12 @@ public enum SupportedLocale: String, CaseIterable, Identifiable {
     case spanish = "es-ES"
     case french = "fr-FR"
     case german = "de-DE"
+    case auto = "auto"
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
-        case .auto: return "🌐 자동 감지 (Auto Detect)"
         case .korean: return "🇰🇷 한국어 (Korean)"
         case .english: return "🇺🇸 English (US)"
         case .japanese: return "🇯🇵 日本語 (Japanese)"
@@ -43,12 +42,13 @@ public enum SupportedLocale: String, CaseIterable, Identifiable {
         case .spanish: return "🇪🇸 Español (Spanish)"
         case .french: return "🇫🇷 Français (French)"
         case .german: return "🇩🇪 Deutsch (German)"
+        case .auto: return "🌐 자동 감지 (Auto Detect)"
         }
     }
 
     public var locale: Locale {
         if self == .auto {
-            return Locale.current
+            return Locale(identifier: "ko-KR") // Default to Korean if auto
         }
         return Locale(identifier: rawValue)
     }
@@ -63,10 +63,14 @@ public final class SpeechTranscriptionService: ObservableObject {
     @Published public private(set) var currentLiveText: String = ""
     @Published public private(set) var committedText: String = ""
     @Published public private(set) var segments: [TranscriptionSegment] = []
-    @Published public private(set) var detectedLanguageCode: String? = nil
-    @Published public private(set) var detectedLanguageDisplayName: String = "대기 중..."
-    @Published public private(set) var detectedLanguageConfidence: Double = 0.0
-    @Published public var selectedLocale: SupportedLocale = .auto
+    @Published public private(set) var detectedLanguageCode: String? = "ko-KR"
+    @Published public private(set) var detectedLanguageDisplayName: String = "🇰🇷 한국어 (고정)"
+    @Published public private(set) var detectedLanguageConfidence: Double = 1.0
+    @Published public var selectedLocale: SupportedLocale = .korean {
+        didSet {
+            updateLanguageDisplay()
+        }
+    }
     @Published public var errorMessage: String? = nil
     @Published public private(set) var authorizationStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
 
@@ -104,6 +108,30 @@ public final class SpeechTranscriptionService: ObservableObject {
 
     public init() {
         self.authorizationStatus = SFSpeechRecognizer.authorizationStatus()
+        self.updateLanguageDisplay()
+    }
+
+    public func updateLanguageDisplay() {
+        if selectedLocale == .auto {
+            if detectedLanguageCode == nil || detectedLanguageCode == "auto" {
+                detectedLanguageDisplayName = "🌐 자동 감지 대기..."
+                detectedLanguageConfidence = 0.0
+            }
+        } else {
+            detectedLanguageCode = selectedLocale.rawValue
+            detectedLanguageDisplayName = "\(selectedLocale.displayName) (고정)"
+            detectedLanguageConfidence = 1.0
+        }
+    }
+
+    public func setLocale(_ newLocale: SupportedLocale, audioEngine: AudioWaveformEngine? = nil) {
+        guard selectedLocale != newLocale else { return }
+        selectedLocale = newLocale
+
+        if isTranscribing, let engine = audioEngine {
+            commitCurrentLiveText()
+            restartRecognition(audioEngine: engine)
+        }
     }
 
     // MARK: - Permissions
@@ -137,19 +165,48 @@ public final class SpeechTranscriptionService: ObservableObject {
             return
         }
 
-        let targetLocale = selectedLocale.locale
-        speechRecognizer = SFSpeechRecognizer(locale: targetLocale) ?? SFSpeechRecognizer()
+        updateLanguageDisplay()
+        try startRecognitionTask(audioEngine: audioEngine)
+        try audioEngine.start()
+        self.isTranscribing = true
+        self.errorMessage = nil
+        self.lastSpeechTime = Date()
 
-        guard let recognizer = speechRecognizer, recognizer.isAvailable else {
-            errorMessage = "선택된 언어의 음성 인식 서비스를 현재 사용할 수 없습니다."
-            return
+        // Silence check timer for speaker diarization
+        silenceCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if self.isTranscribing && !self.currentLiveText.isEmpty {
+                    let elapsed = Date().timeIntervalSince(self.lastSpeechTime)
+                    // If speaker paused for > 1.6 seconds, commit segment and optionally switch speaker turn
+                    if elapsed > 1.6 {
+                        self.commitCurrentLiveText()
+                        if self.autoSpeakerSwitchOnPause {
+                            self.currentSpeakerId = (self.currentSpeakerId == 1) ? 2 : 1
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    private func startRecognitionTask(audioEngine: AudioWaveformEngine) throws {
+        let targetLocale = selectedLocale.locale
+        guard let recognizer = SFSpeechRecognizer(locale: targetLocale), recognizer.isAvailable else {
+            throw NSError(
+                domain: "SpeechTranscriptionService",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "'\(selectedLocale.displayName)' 언어 음성 인식기를 초기화할 수 없습니다."]
+            )
+        }
+        self.speechRecognizer = recognizer
 
         recognitionTask?.cancel()
         recognitionTask = nil
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.taskHint = .dictation
         self.recognitionRequest = request
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -159,7 +216,11 @@ public final class SpeechTranscriptionService: ObservableObject {
                     let transcribedString = result.bestTranscription.formattedString
                     self.currentLiveText = transcribedString
                     self.lastSpeechTime = Date()
-                    self.analyzeSpokenLanguage(text: transcribedString)
+
+                    // Only run auto-language detector if auto mode is enabled
+                    if self.selectedLocale == .auto {
+                        self.analyzeSpokenLanguage(text: transcribedString)
+                    }
 
                     if result.isFinal {
                         self.commitCurrentLiveText()
@@ -180,35 +241,23 @@ public final class SpeechTranscriptionService: ObservableObject {
             guard let self = self else { return }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-
-                // Suppress buffer if sound analysis detects cough or noise
                 if !AudioClassifierService.shared.shouldSuppressAudio() {
                     self.recognitionRequest?.append(buffer)
                 }
             }
         }
+    }
 
-        try audioEngine.start()
-        self.isTranscribing = true
-        self.errorMessage = nil
-        self.lastSpeechTime = Date()
+    private func restartRecognition(audioEngine: AudioWaveformEngine) {
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionRequest = nil
+        recognitionTask = nil
 
-        // Silence check timer for speaker diarization
-        silenceCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                if self.isTranscribing && !self.currentLiveText.isEmpty {
-                    let elapsed = Date().timeIntervalSince(self.lastSpeechTime)
-                    // If speaker paused for > 1.6 seconds, commit segment and optionally switch speaker turn
-                    if elapsed > 1.6 {
-                        self.commitCurrentLiveText()
-                        if self.autoSpeakerSwitchOnPause {
-                            // Cycle between 화자 1 and 화자 2
-                            self.currentSpeakerId = (self.currentSpeakerId == 1) ? 2 : 1
-                        }
-                    }
-                }
-            }
+        do {
+            try startRecognitionTask(audioEngine: audioEngine)
+        } catch {
+            self.errorMessage = "언어 전환 실패: \(error.localizedDescription)"
         }
     }
 
@@ -236,10 +285,8 @@ public final class SpeechTranscriptionService: ObservableObject {
         currentLiveText = ""
         committedText = ""
         segments.removeAll()
-        detectedLanguageCode = nil
-        detectedLanguageDisplayName = "대기 중..."
-        detectedLanguageConfidence = 0.0
         errorMessage = nil
+        updateLanguageDisplay()
     }
 
     public func selectSpeaker(id: Int) {
@@ -272,8 +319,9 @@ public final class SpeechTranscriptionService: ObservableObject {
         currentLiveText = ""
     }
 
-    // MARK: - Language Detection
+    // MARK: - Language Detection (Only active when selectedLocale == .auto)
     private func analyzeSpokenLanguage(text: String) {
+        guard selectedLocale == .auto else { return }
         guard text.count >= 2 else { return }
 
         languageRecognizer.reset()
