@@ -6,14 +6,14 @@ public struct SeismoView: View {
     public init() {}
 
     public var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 18) {
             // Header stats row
             HStack(spacing: 16) {
                 // PGA Card
                 StatCard(
                     title: "PEAK GROUND ACCEL",
                     value: String(format: "%.2f mg", seismoService.currentPGA),
-                    subvalue: seismoService.currentPGA > 10.0 ? "강한 진동" : "정상 진동 폭",
+                    subvalue: seismoService.currentPGA > 10.0 ? "강한 진동 발생" : "정상 배경 진동",
                     icon: "waveform.path.ecg",
                     tintColor: seismoService.currentPGA > 10.0 ? .orange : .cyan
                 )
@@ -29,10 +29,10 @@ public struct SeismoView: View {
 
                 // Status Card
                 StatCard(
-                    title: "IMU SENSOR STATUS",
-                    value: seismoService.isMonitoring ? (seismoService.isEventTriggered ? "EVENT DETECTED!" : "ACTIVE STREAM") : "IDLE",
-                    subvalue: seismoService.isSimulatedMode ? "Synthetic MEMS Mock" : "Apple SPU Direct",
-                    icon: "cpu",
+                    title: "PHYSICAL SENSOR STATUS",
+                    value: seismoService.isMonitoring ? (seismoService.isEventTriggered ? "SHAKE DETECTED!" : "LIVE SENSING") : "IDLE",
+                    subvalue: "Acoustic + Motion Fusion",
+                    icon: "wave.3.forward",
                     tintColor: seismoService.isEventTriggered ? .red : (seismoService.isMonitoring ? .green : .secondary)
                 )
             }
@@ -42,11 +42,17 @@ public struct SeismoView: View {
                 HStack {
                     Label("HELICORDER WAVEFORM (REAL-TIME SEISMIC FEED)", systemImage: "waveform.path.badge.plus")
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan)
+                        .foregroundColor(seismoService.isEventTriggered ? .red : .cyan)
 
                     Spacer()
 
-                    Text("\(seismoService.recentSamples.count) samples / 50ms")
+                    if seismoService.isEventTriggered {
+                        Text("🚨 진동 이벤트 감지됨!")
+                            .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                            .foregroundColor(.red)
+                    }
+
+                    Text("\(seismoService.recentSamples.count) samples / 40ms")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
@@ -56,7 +62,7 @@ public struct SeismoView: View {
                         .fill(Color(red: 0.03, green: 0.05, blue: 0.10))
                         .overlay(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.cyan.opacity(0.2), lineWidth: 1)
+                                .stroke(seismoService.isEventTriggered ? Color.red.opacity(0.8) : Color.cyan.opacity(0.2), lineWidth: seismoService.isEventTriggered ? 2 : 1)
                         )
 
                     Canvas { context, size in
@@ -77,7 +83,7 @@ public struct SeismoView: View {
                         var wavePath = Path()
                         for (i, sample) in samples.enumerated() {
                             let x = CGFloat(i) * stepX
-                            let yOffset = CGFloat(sample.magnitude) * 1.8
+                            let yOffset = CGFloat(sample.magnitude) * 2.2
                             let y = midY - yOffset
 
                             if i == 0 {
@@ -88,45 +94,85 @@ public struct SeismoView: View {
                         }
 
                         context.addFilter(.blur(radius: 2))
-                        context.stroke(wavePath, with: .color(seismoService.isEventTriggered ? Color.red.opacity(0.6) : Color.cyan.opacity(0.4)), lineWidth: 3)
+                        context.stroke(wavePath, with: .color(seismoService.isEventTriggered ? Color.red.opacity(0.7) : Color.cyan.opacity(0.4)), lineWidth: 3)
 
                         context.addFilter(.blur(radius: 0))
-                        context.stroke(wavePath, with: .color(seismoService.isEventTriggered ? Color.red : Color.cyan), lineWidth: 1.5)
+                        context.stroke(wavePath, with: .color(seismoService.isEventTriggered ? Color.red : Color.cyan), lineWidth: 1.6)
                     }
+
+                    // Direct Drag / Tap Interaction
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    let translation = value.translation
+                                    let dragSpeed = sqrt(translation.width * translation.width + translation.height * translation.height)
+                                    seismoService.injectDirectShake(intensity: Double(min(5.0, dragSpeed / 12.0)))
+                                }
+                        )
                 }
-                .frame(height: 160)
+                .frame(height: 170)
             }
+
+            // Real-Time Sensor Input Status & Sensitivity Slider
+            HStack(spacing: 12) {
+                Label("센서 감도:", systemImage: "slider.horizontal.3")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.cyan)
+
+                Slider(value: $seismoService.sensorSensitivity, in: 0.5...5.0, step: 0.5)
+                    .frame(width: 130)
+
+                Text("\(String(format: "%.1f", seismoService.sensorSensitivity))x")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(seismoService.isMonitoring ? Color.green : Color.gray)
+                        .frame(width: 6, height: 6)
+                    Text("🟢 실시간 감지 중: 책상 두드림, 마우스/트랙패드 흔들기, 직접 드래그")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
 
             // Quick Impulse Injection Buttons
             VStack(alignment: .leading, spacing: 10) {
-                Text("TEST IMPULSE GENERATION (하드웨어 진동 시뮬레이션)")
+                Text("TEST IMPULSE INJECTION (원터치 충격 시뮬레이션)")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.secondary)
 
                 HStack(spacing: 12) {
                     Button {
-                        seismoService.injectImpulse(type: "책상 톡톡 두드림", strength: 0.5)
+                        seismoService.injectImpulse(type: "책상 톡톡 두드림", strength: 0.6)
                     } label: {
                         Label("책상 두드림 (Tap)", systemImage: "hand.tap.fill")
                     }
                     .buttonStyle(.bordered)
 
                     Button {
-                        seismoService.injectImpulse(type: "키보드 타이핑 진동", strength: 0.25)
+                        seismoService.injectImpulse(type: "키보드 타이핑 진동", strength: 0.35)
                     } label: {
                         Label("타이핑 진동", systemImage: "keyboard.fill")
                     }
                     .buttonStyle(.bordered)
 
                     Button {
-                        seismoService.injectImpulse(type: "발걸음 충격", strength: 0.8)
+                        seismoService.injectImpulse(type: "발걸음 쿵쿵 충격", strength: 0.9)
                     } label: {
                         Label("발걸음 충격", systemImage: "figure.walk")
                     }
                     .buttonStyle(.bordered)
 
                     Button {
-                        seismoService.injectImpulse(type: "지진 흔들림 이벤트", strength: 1.6)
+                        seismoService.injectImpulse(type: "강한 지진 흔들림", strength: 2.0)
                     } label: {
                         Label("지진 경보 이벤트", systemImage: "exclamationmark.triangle.fill")
                     }
@@ -142,8 +188,8 @@ public struct SeismoView: View {
                             seismoService.startMonitoring()
                         }
                     } label: {
-                        Label(seismoService.isMonitoring ? "모니터링 중지" : "지진계 시작",
-                              systemImage: seismoService.isMonitoring ? "stop.fill" : "play.fill")
+                        Label(seismoService.isMonitoring ? "모니터링 일시정지" : "지진계 시작",
+                              systemImage: seismoService.isMonitoring ? "pause.fill" : "play.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(seismoService.isMonitoring ? .orange : .green)
@@ -153,9 +199,12 @@ public struct SeismoView: View {
             // Detected Events History
             if !seismoService.detectedEvents.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("DETECTED TREMOR EVENTS LOG")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("DETECTED TREMOR EVENTS LOG (\(seismoService.detectedEvents.count)건)")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
 
                     ScrollView {
                         VStack(spacing: 6) {
@@ -209,7 +258,7 @@ private struct StatCard: View {
     let tintColor: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -220,19 +269,17 @@ private struct StatCard: View {
             }
 
             Text(value)
-                .font(.system(size: 20, weight: .bold, design: .monospaced))
-                .foregroundColor(.primary)
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .foregroundColor(.white)
 
             Text(subvalue)
                 .font(.system(size: 10))
-                .foregroundColor(.secondary)
+                .foregroundColor(tintColor)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(tintColor.opacity(0.2), lineWidth: 1)
-        )
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(tintColor.opacity(0.3), lineWidth: 1))
     }
 }
