@@ -220,9 +220,9 @@ public final class SummarizationService: ObservableObject {
             if scoreValue > 0.2 {
                 sentimentDescription = "긍정적 (Positive ✨ \(String(format: "%.1f", scoreValue * 100))%)"
             } else if scoreValue < -0.2 {
-                sentimentDescription = "진지 / 부정적 (Serious/Negative ⚠️ \(String(format: "%.1f", scoreValue * 100))%)"
+                sentimentDescription = "진지 / 부정적 (Serious/Negative ⚠ \(String(format: "%.1f", scoreValue * 100))%)"
             } else {
-                sentimentDescription = "중립적 / 객관적 (Neutral ⚖️)"
+                sentimentDescription = "중립적 / 객관적 (Neutral ⚖)"
             }
 
             // 4. Extractive Key Sentences
@@ -337,7 +337,7 @@ public final class SummarizationService: ObservableObject {
         - [ ] 할 일 1
         - [ ] 할 일 2
 
-        ### 🏷️ 핵심 키워드
+        ### 🏷 핵심 키워드
         `#키워드1` `#키워드2` `#키워드3`
 
         언어 힌트: \(languageHint ?? "한국어")

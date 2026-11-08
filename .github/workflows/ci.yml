@@ -24,12 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Secret Scan (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check for Cargo.toml
         id: check_cargo
@@ -61,17 +61,17 @@ jobs:
 
       - name: Set up Rust Toolchain
         if: steps.check_cargo.outputs.has_cargo == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@315e085e86116a78f6301446a1ac960d77402615 # stable
         with:
           components: rustfmt, clippy
 
       - name: Cache Cargo Dependencies
         if: steps.check_cargo.outputs.has_cargo == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eece3 # v2
 
       - name: Install cargo-audit
         if: steps.check_cargo.outputs.has_cargo == 'true'
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@1e45da79ff738096f94747ebc793ff00c3b0eb68 # cargo-audit
 
       - name: Rust Formatting Check (cargo fmt)
         if: steps.check_cargo.outputs.has_cargo == 'true'
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check for Dockerfile
         id: check_docker
@@ -130,7 +130,7 @@ jobs:
 
       - name: Lint Dockerfile (Hadolint)
         if: steps.check_docker.outputs.has_docker == 'true'
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9daabfe82e31f8d36f90363356fd76ae6bc21 # v3.1.0
         with:
           recursive: true
           ignore: DL3008,DL3013
@@ -138,7 +138,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.check_docker.outputs.has_docker == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 # v3
 
       - name: Build Docker Image
         if: steps.check_docker.outputs.has_docker == 'true'
@@ -153,7 +153,7 @@ jobs:
 
       - name: Container Security Scan (Trivy)
         if: steps.check_docker.outputs.has_docker == 'true'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # master
         with:
           image-ref: 'ci-test-image:latest'
           format: 'table'

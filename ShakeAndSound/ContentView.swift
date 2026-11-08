@@ -111,7 +111,7 @@ public struct ContentView: View {
                     }
 
                     if speechService.currentLivePitchHz > 60 {
-                        Text("🎙️ 피치: \(Int(speechService.currentLivePitchHz)) Hz")
+                        Text("🎙 피치: \(Int(speechService.currentLivePitchHz)) Hz")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.cyan)
                     }
