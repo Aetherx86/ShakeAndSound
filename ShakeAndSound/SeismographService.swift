@@ -31,6 +31,11 @@ public final class SeismographService: ObservableObject {
     @Published public private(set) var isEventTriggered: Bool = false
     @Published public private(set) var recentSamples: [SeismicSample] = []
     @Published public private(set) var detectedEvents: [SeismicEvent] = []
+    @Published public private(set) var currentJerkMgPerSec: Double = 0.0
+    @Published public private(set) var linearDynamicPGA: Double = 0.0
+    @Published public private(set) var dominantFrequencyHz: Double = 0.0
+    @Published public private(set) var ariasIntensity: Double = 0.0
+    @Published public private(set) var detectedPattern: ShakePatternKind = .idle
 
     // Settings
     @Published public var triggerThreshold: Double = 3.0
@@ -44,6 +49,7 @@ public final class SeismographService: ObservableObject {
     private var physicalMotionZ: Double = 0.0
     private var impulseStrength: Double = 0.0
     private var impulseLabel: String = "외력 충격"
+    private var kinematicsEngine = MotionKinematicsEngine()
 
     // Trackpad / Mouse Shake Tracking
     private var lastPointerLocation: CGPoint = .zero
@@ -117,6 +123,12 @@ public final class SeismographService: ObservableObject {
         currentPGA = 0.0
         staLtaRatio = 1.0
         isEventTriggered = false
+        currentJerkMgPerSec = 0.0
+        linearDynamicPGA = 0.0
+        dominantFrequencyHz = 0.0
+        ariasIntensity = 0.0
+        detectedPattern = .idle
+        kinematicsEngine.reset()
         physicalMotionX = 0
         physicalMotionY = 0
         physicalMotionZ = 0
@@ -278,9 +290,21 @@ public final class SeismographService: ObservableObject {
         let ratio = max(0.5, staEnergy / max(0.001, ltaEnergy))
         let triggered = ratio >= triggerThreshold || pga > 14.0
 
+        let kinematicFrame = kinematicsEngine.ingest(
+            rawX: noiseX * sensorSensitivity,
+            rawY: noiseY * sensorSensitivity,
+            rawZ: noiseZ * sensorSensitivity,
+            dt: 0.04
+        )
+
         self.currentPGA = pga
         self.staLtaRatio = ratio
         self.isEventTriggered = triggered
+        self.currentJerkMgPerSec = kinematicFrame.jerkMagnitudeMgPerSec
+        self.linearDynamicPGA = kinematicFrame.dynamicMagnitudeMg
+        self.dominantFrequencyHz = kinematicFrame.dominantFrequencyHz
+        self.ariasIntensity = kinematicFrame.ariasIntensityMmPerSec
+        self.detectedPattern = kinematicFrame.pattern
 
         if triggered && (detectedEvents.isEmpty || Date().timeIntervalSince(detectedEvents.first?.timestamp ?? .distantPast) > 1.2) {
             let event = SeismicEvent(
@@ -308,5 +332,17 @@ public final class SeismographService: ObservableObject {
         if recentSamples.count > maxHistorySamples {
             recentSamples.removeFirst()
         }
+    }
+
+    public func exportRecentSeismicSonificationWAV(sampleRate: Int = 48_000) throws -> Data {
+        let magnitudes = recentSamples.isEmpty ? [0.2, 4.0, 18.0, 42.0, 12.0, 1.5] : recentSamples.map(\.magnitude)
+        let ratios = Array(repeating: max(1.0, staLtaRatio), count: magnitudes.count)
+        let pcm = ProceduralAudioSynthesizer.sonifySeismicTrace(
+            magnitudesMg: magnitudes,
+            staLtaRatios: ratios,
+            sampleIntervalSeconds: 0.04,
+            audioSampleRate: Double(sampleRate)
+        )
+        return try WAVCodec.encodePCM16WAV(samples: pcm, sampleRate: sampleRate, channels: 1)
     }
 }

@@ -229,4 +229,18 @@ public final class AudioWaveformEngine: ObservableObject {
         }
         return 0.0
     }
+
+    public nonisolated static func analyzeSamples(
+        _ samples: [Float],
+        sampleRate: Double = 48_000.0
+    ) -> AcousticVoiceFeatures {
+        let analysis = ProceduralAudioSynthesizer.analyzePCM(samples: samples, sampleRate: sampleRate)
+        return AcousticVoiceFeatures(
+            level: analysis.normalizedLevel,
+            bands: analysis.frequencyBands,
+            pitchHz: analysis.fundamentalPitchHz,
+            spectralCentroid: analysis.spectralCentroid,
+            isVoiceActive: analysis.isVoiceActive
+        )
+    }
 }

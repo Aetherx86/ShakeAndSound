@@ -61,17 +61,17 @@ jobs:
 
       - name: Set up Rust Toolchain
         if: steps.check_cargo.outputs.has_cargo == 'true'
-        uses: dtolnay/rust-toolchain@315e085e86116a78f6301446a1ac960d77402615 # stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: rustfmt, clippy
 
       - name: Cache Cargo Dependencies
         if: steps.check_cargo.outputs.has_cargo == 'true'
-        uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eece3 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-audit
         if: steps.check_cargo.outputs.has_cargo == 'true'
-        uses: taiki-e/install-action@1e45da79ff738096f94747ebc793ff00c3b0eb68 # cargo-audit
+        uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
 
       - name: Rust Formatting Check (cargo fmt)
         if: steps.check_cargo.outputs.has_cargo == 'true'
@@ -130,7 +130,7 @@ jobs:
 
       - name: Lint Dockerfile (Hadolint)
         if: steps.check_docker.outputs.has_docker == 'true'
-        uses: hadolint/hadolint-action@54c9daabfe82e31f8d36f90363356fd76ae6bc21 # v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           recursive: true
           ignore: DL3008,DL3013
