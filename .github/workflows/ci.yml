@@ -153,7 +153,7 @@ jobs:
 
       - name: Container Security Scan (Trivy)
         if: steps.check_docker.outputs.has_docker == 'true'
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # master
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master
         with:
           image-ref: 'ci-test-image:latest'
           format: 'table'
